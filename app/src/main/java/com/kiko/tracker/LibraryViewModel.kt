@@ -47,6 +47,19 @@ class LibraryViewModel : ViewModel() {
     private val TENRAI_SEARCH_PAGE_LIMIT = 10
     // Start with empty list
     var items by mutableStateOf(emptyList<MediaItem>()); private set
+    // O(1) library lookup by (id, type), used when reconciling a page of seasonal/discover
+    // results against the user's library. Previously each reconciliation ran items.find{...} —
+    // a full linear scan of the whole library — once per candidate in the incoming page, so a
+    // 20-50 item page against a several-hundred-entry library was an O(page * library) scan.
+    // derivedStateOf caches this and only recomputes when `items` itself changes.
+    private val itemsByKey: Map<Pair<String, MediaType>, MediaItem> by derivedStateOf {
+        items.associateBy { it.id to it.type }
+    }
+    // Live "is this tracked, and as what?" lookup for items that didn't come from the user's
+    // own list (search/discover/seasonal/ranking results) — O(1) via itemsByKey, and re-evaluated
+    // on every call, so a status edit or a delete shows up on these screens immediately instead
+    // of only after the screen happens to re-fetch. Used as Cover's overrideStatus.
+    fun trackedStatus(item: MediaItem): WatchStatus? = itemsByKey[item.id to item.type]?.status
     var destination by mutableStateOf(Destination.Home)
     // Avatar popup menu (profile/settings), opened from any tab's avatar. anchor is
     // that avatar's on-screen bounds at the moment it was tapped, captured by Avatar
@@ -145,6 +158,7 @@ class LibraryViewModel : ViewModel() {
         var statusDistribution: StatusDistribution? = null,
         var characters: List<CharacterEntry>? = null,
         var reviews: List<ReviewEntry>? = null,
+        var scoreStats: ScoreStats? = null,
         var relatedScroll: Pair<Int, Int> = 0 to 0,
         var recommendedScroll: Pair<Int, Int> = 0 to 0,
     )
@@ -292,6 +306,20 @@ class LibraryViewModel : ViewModel() {
     var yearFilterSort by mutableStateOf(ListSort.Title); private set
     fun setYearFilterSort(context: Context, sort: ListSort) { yearFilterSort = sort; settingsPrefs(context).edit().putString("year_filter_sort", sort.name).apply() }
     fun loadYearFilterSort(context: Context) { yearFilterSort = runCatching { ListSort.valueOf(settingsPrefs(context).getString("year_filter_sort", ListSort.Title.name)!!) }.getOrDefault(ListSort.Title) }
+    var formatFilterViewMode by mutableStateOf(ListViewMode.List); private set
+    fun setFormatFilterViewMode(context: Context, mode: ListViewMode) { formatFilterViewMode = mode; settingsPrefs(context).edit().putString("format_filter_view_mode", mode.name).apply() }
+    fun loadFormatFilterViewMode(context: Context) { formatFilterViewMode = runCatching { ListViewMode.valueOf(settingsPrefs(context).getString("format_filter_view_mode", ListViewMode.List.name)!!) }.getOrDefault(ListViewMode.List) }
+    var formatFilterSort by mutableStateOf(ListSort.Title); private set
+    fun setFormatFilterSort(context: Context, sort: ListSort) { formatFilterSort = sort; settingsPrefs(context).edit().putString("format_filter_sort", sort.name).apply() }
+    fun loadFormatFilterSort(context: Context) { formatFilterSort = runCatching { ListSort.valueOf(settingsPrefs(context).getString("format_filter_sort", ListSort.Title.name)!!) }.getOrDefault(ListSort.Title) }
+    // Genre breakdown drill-down view mode + sort — same pattern as the format filter
+    // screen's own prefs above, kept separate so the two drill-down screens don't share state
+    var genreFilterViewMode by mutableStateOf(ListViewMode.List); private set
+    fun setGenreFilterViewMode(context: Context, mode: ListViewMode) { genreFilterViewMode = mode; settingsPrefs(context).edit().putString("genre_filter_view_mode", mode.name).apply() }
+    fun loadGenreFilterViewMode(context: Context) { genreFilterViewMode = runCatching { ListViewMode.valueOf(settingsPrefs(context).getString("genre_filter_view_mode", ListViewMode.List.name)!!) }.getOrDefault(ListViewMode.List) }
+    var genreFilterSort by mutableStateOf(ListSort.Title); private set
+    fun setGenreFilterSort(context: Context, sort: ListSort) { genreFilterSort = sort; settingsPrefs(context).edit().putString("genre_filter_sort", sort.name).apply() }
+    fun loadGenreFilterSort(context: Context) { genreFilterSort = runCatching { ListSort.valueOf(settingsPrefs(context).getString("genre_filter_sort", ListSort.Title.name)!!) }.getOrDefault(ListSort.Title) }
     // Profile stats page scroll — a single pixel offset since it's a plain
     // verticalScroll Column, not a LazyColumn with item indices
     var profileScrollOffset by mutableStateOf(0); private set
@@ -411,7 +439,24 @@ class LibraryViewModel : ViewModel() {
     var discoverResults by mutableStateOf<List<MediaItem>>(emptyList()); private set
     var discoverFilters by mutableStateOf(DiscoverFilters()); private set
     var discoverSort by mutableStateOf(DiscoverSort.Relevance); private set
-    fun selectDiscoverSort(sort: DiscoverSort) { discoverSort = sort; discoverResults = discoverResults.sortedForDiscover(sort, titleLanguage, discoverQuery) }
+    // MalGenreFiltered results are paginated 50 at a time straight off MAL's own genre-filtered
+    // search — whatever's already in discoverResults is only however many pages happen to have
+    // been scrolled to so far, not the whole genre. Re-sorting just that loaded slice client-side
+    // (the old behavior) can't reproduce MAL's true "sorted by Members/Score/Newest" order, since
+    // the highest-ranked items for that sort might sit on a page that hasn't been fetched yet.
+    // So for that source, changing the sort re-runs the search from page 1 with the new sort
+    // wired through to MalGenreApi (see sortParam there), which asks MAL to hand back
+    // already-globally-sorted pages instead. Other sources (title search relevance, the
+    // ranking-pool fallback) already have their whole pool loaded in one shot, so a plain
+    // client-side re-sort of what's already there is correct for them and doesn't need a re-fetch.
+    fun selectDiscoverSort(context: Context, sort: DiscoverSort) {
+        discoverSort = sort
+        if (discoverPaginationSource == DiscoverPaginationSource.MalGenreFiltered) {
+            runDiscoverSearch(context, discoverQuery, discoverTypeFilter)
+        } else {
+            discoverResults = discoverResults.sortedForDiscover(sort, titleLanguage, discoverQuery)
+        }
+    }
     var discoverSearching by mutableStateOf(false); private set
     var discoverError by mutableStateOf<String?>(null); private set
     var discoverHasMore by mutableStateOf(false); private set
@@ -620,8 +665,10 @@ class LibraryViewModel : ViewModel() {
         viewModelScope.launch {
             seasonalLoading = true
             runCatching { api.seasonalAnime(year, season.api, sort = sort.api) }
-                // Reconcile against user's library
-                .onSuccess { seasonalResults = it.items.map { candidate -> items.find { i -> i.id == candidate.id && i.type == candidate.type } ?: candidate }; seasonalHasMore = it.hasMore; seasonalError = null }
+                // Not reconciled against the library here — the status badge is a live
+                // vm.trackedStatus() lookup at render time instead (see SeasonalGridCard/
+                // ScheduleRow), so it stays accurate after later edits/deletes without a re-fetch.
+                .onSuccess { seasonalResults = it.items; seasonalHasMore = it.hasMore; seasonalError = null }
                 .onFailure { seasonalError = it.message ?: "Could not load season"; seasonalHasMore = false }
             seasonalLoading = false
         }
@@ -635,8 +682,8 @@ class LibraryViewModel : ViewModel() {
         viewModelScope.launch {
             seasonalLoadingMore = true
             runCatching { api.seasonalAnime(seasonalYear, seasonalSeason.api, offset = seasonalResults.size, sort = seasonalSort.api) }
-                // Reconcile against user's library
-                .onSuccess { seasonalResults = seasonalResults + it.items.map { candidate -> items.find { i -> i.id == candidate.id && i.type == candidate.type } ?: candidate }; seasonalHasMore = it.hasMore }
+                // Not reconciled against the library — see loadSeasonal's comment above.
+                .onSuccess { seasonalResults = seasonalResults + it.items; seasonalHasMore = it.hasMore }
                 .onFailure { seasonalHasMore = false }
             seasonalLoadingMore = false
         }
@@ -765,7 +812,7 @@ class LibraryViewModel : ViewModel() {
                                 async {
                                     val ids = runCatching { tenrai.resolveGenreIds(kind, names) }.getOrElse { emptyList() }
                                     if (ids.isEmpty()) null else runCatching {
-                                        malGenre.search(kind, ids, malTypeCode(kind, filters.format), malStatusCode(filters.airingStatus, kind), page = 1, includeAdult = nsfwEnabled)
+                                        malGenre.search(kind, ids, malTypeCode(kind, filters.format), malStatusCode(filters.airingStatus, kind), page = 1, includeAdult = nsfwEnabled, sort = discoverSort)
                                     }.getOrNull()?.let { kind to it }
                                 }
                             }.awaitAll().filterNotNull()
@@ -805,10 +852,14 @@ class LibraryViewModel : ViewModel() {
                             rankTypes.map { rankType -> async { api.ranking(mt, rankType, limit = 500) } }
                         }.awaitAll().flatten()
                     }.distinctBy { it.id }
-                // Reconcile against user's library, then establish the display order once,
-                // here, at fetch time — not reactively on every read (see visibleDiscoverResults).
-                results.map { candidate -> items.find { it.id == candidate.id && it.type == candidate.type } ?: candidate }
-                    .sortedForDiscover(discoverSort, titleLanguage, query)
+                // Sort once, here, at fetch time — not reactively on every read (see
+                // visibleDiscoverResults). Deliberately NOT reconciled against the library here
+                // anymore: that used to bake each matching item's status permanently into
+                // discoverResults, which then stayed stale after later editing or deleting that
+                // title elsewhere (or, worse, kept showing a status after a delete because the
+                // baked copy still had inUserList = true). The status badge now always comes
+                // from a live vm.trackedStatus() lookup at render time instead (see DiscoverScreen).
+                results.sortedForDiscover(discoverSort, titleLanguage, query)
             }
                 .onSuccess { discoverResults = it; discoverError = null }
                 .onFailure {
@@ -849,8 +900,8 @@ class LibraryViewModel : ViewModel() {
                 // already on screen jump position every time a new page landed.
                 .onSuccess { page ->
                     val existingKeys = discoverResults.mapTo(HashSet()) { it.id to it.type }
+                    // Not reconciled against the library — see runDiscoverSearch's comment above.
                     val newItems = page.items
-                        .map { candidate -> items.find { i -> i.id == candidate.id && i.type == candidate.type } ?: candidate }
                         .filter { (it.id to it.type) !in existingKeys }
                         .distinctBy { it.id to it.type }
                         .sortedForDiscover(discoverSort, titleLanguage, discoverQuery)
@@ -871,14 +922,14 @@ class LibraryViewModel : ViewModel() {
         discoverLoadMoreJob = viewModelScope.launch {
             discoverLoadingMore = true
             runCatching {
-                MalGenreApi().search(kind, ids, malTypeCode(kind, discoverFilters.format), malStatusCode(discoverFilters.airingStatus, kind), page = nextPage, includeAdult = nsfwEnabled)
+                MalGenreApi().search(kind, ids, malTypeCode(kind, discoverFilters.format), malStatusCode(discoverFilters.airingStatus, kind), page = nextPage, includeAdult = nsfwEnabled, sort = discoverSort)
             }
                 // Same reasoning as loadMoreTitleSearch: sort only the new page, append after
                 // the already-displayed items instead of re-sorting the whole merged list.
                 .onSuccess { page ->
                     val existingKeys = discoverResults.mapTo(HashSet()) { it.id to it.type }
+                    // Not reconciled against the library — see runDiscoverSearch's comment above.
                     val newItems = page.items
-                        .map { candidate -> items.find { i -> i.id == candidate.id && i.type == candidate.type } ?: candidate }
                         .filter { (it.id to it.type) !in existingKeys }
                         .distinctBy { it.id to it.type }
                         .sortedForDiscover(discoverSort, titleLanguage, discoverQuery)
@@ -1310,6 +1361,22 @@ class LibraryViewModel : ViewModel() {
         viewModelScope.launch {
             runCatching { TenraiApi().fetchReviews(kind, intId) }
                 .onSuccess { cache.reviews = it; if (it.isNotEmpty()) onFound(it) }
+            onDone()
+        }
+    }
+
+    // Community score breakdown for the Score Stats screen, opened via "See more" on
+    // Status distribution. Its own on-demand load (not folded into ensureDetailFetched
+    // above) since it's a separate MAL page (/stats) that most people opening a title
+    // will never actually tap into.
+    fun loadScoreStats(item: MediaItem, onFound: (ScoreStats) -> Unit, onDone: () -> Unit = {}) {
+        val cache = detailCache(item.id, item.type)
+        cache.scoreStats?.let { onFound(it); onDone(); return }
+        val intId = item.id.toIntOrNull()
+        if (intId == null) { onDone(); return }
+        viewModelScope.launch {
+            runCatching { MalDetailScrapeApi().fetchScoreStats(intId, item.type, item.title) }
+                .onSuccess { cache.scoreStats = it; if (it.total > 0) onFound(it) }
             onDone()
         }
     }

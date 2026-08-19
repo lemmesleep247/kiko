@@ -16,12 +16,15 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -97,23 +100,17 @@ fun Modifier.kikoCombinedClickable(
 @Composable
 fun rememberStaggerMemory(): MutableSet<Int> = remember { mutableSetOf() }
 
+// Previously wrapped content in an AnimatedVisibility fade+slide-in with a per-index
+// staggered delay, played every time a row first scrolled into view. That's extra
+// composition + alpha/translation animation work happening during scroll fling — on
+// List/Discover/Seasonal/Hub, which are all real (many-row) lazy lists, this competed
+// with the scroll gesture for frame time and made those tabs feel less smooth than
+// Home (which has no itemized entrance animation at all). Kept the same signature as
+// a plain passthrough so every call site (List, Discover, Seasonal, Hub) keeps working
+// unchanged, just without the animation.
 @Composable
 fun StaggeredItem(index: Int, seen: MutableSet<Int>? = null, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
-    val alreadySeen = seen?.contains(index) == true
-    // Starting MutableTransitionState's initialState at true (when alreadySeen) means
-    // initialState == targetState, so AnimatedVisibility skips the enter animation
-    // entirely and just shows the content — no special-cased "instant" enter needed.
-    val visibleState = remember(index) { MutableTransitionState(alreadySeen).apply { targetState = true } }
-    if (seen != null) LaunchedEffect(index) { seen += index }
-    val delay = (index * 30).coerceAtMost(240)
-    AnimatedVisibility(
-        visibleState = visibleState,
-        modifier = modifier,
-        enter = fadeIn(tween(260, delayMillis = delay)) +
-                slideInVertically(tween(260, delayMillis = delay), initialOffsetY = { it / 8 }),
-    ) {
-        content()
-    }
+    Box(modifier) { content() }
 }
 
 // ---------------------------------------------------------------------------
@@ -173,36 +170,60 @@ fun TopicRowSkeletonGroup(count: Int = 6) {
     }
 }
 
-/** Stand-in for the Home "Continue" row while the first sync hasn't landed yet — same
- *  plain [ListRowSkeleton] shape used for My List/search rows, no card box around it. */
+/** Stand-in for the Home "Continue" row while the first sync hasn't landed yet — boxed
+ *  the same way as the real [ContinueCard] (surface fill + cardBorder outline) so the
+ *  page doesn't reflow once real data lands. */
 @Composable
 fun ContinueCardSkeleton(modifier: Modifier = Modifier) {
-    ListRowSkeleton(modifier)
+    val c = LocalKikoColors.current
+    Box(
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(kikoCorner(22.dp)))
+            .background(c.surface)
+            .border(1.dp, c.cardBorder, RoundedCornerShape(kikoCorner(22.dp))),
+    ) {
+        ListRowSkeleton(Modifier.padding(horizontal = 14.dp))
+    }
 }
 
-/** Stand-in for a single [AiringNextCard]: cover-sized block + title/time bars. */
+/** Stand-in for a single [AiringNextCard] — boxed the exact same way as the real card
+ *  (surface fill + cardBorder outline + 22dp rounded corners, cover-then-text layout at
+ *  matching sizes) so the loading state and the real content share the same card shape.
+ *  Previously this only rendered the inner content with no card of its own, and
+ *  [AiringNextRowSkeleton] wrapped all three in one shared container instead — the real
+ *  row is a horizontally-scrolling carousel of individually-bordered cards, so that read
+ *  as a visibly different shape once real data swapped in. */
 @Composable
 fun AiringNextCardSkeleton(modifier: Modifier = Modifier) {
-    Row(
+    val c = LocalKikoColors.current
+    Box(
         modifier
-            .width(264.dp)
-            .padding(vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .clip(RoundedCornerShape(kikoCorner(22.dp)))
+            .background(c.surface)
+            .border(1.dp, c.cardBorder, RoundedCornerShape(kikoCorner(22.dp))),
     ) {
-        SkeletonBlock(Modifier.size(width = 78.dp, height = 110.dp), shape = RoundedCornerShape(kikoCorner(16.dp)))
-        Column(Modifier.padding(start = 13.dp).weight(1f)) {
-            SkeletonBlock(Modifier.fillMaxWidth(0.85f).height(14.dp))
-            SkeletonBlock(Modifier.padding(top = 6.dp).fillMaxWidth(0.5f).height(14.dp))
-            SkeletonBlock(Modifier.padding(top = 12.dp).fillMaxWidth(0.6f).height(11.dp))
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            SkeletonBlock(Modifier.size(width = 84.dp, height = 118.dp), shape = RoundedCornerShape(kikoCorner(16.dp)))
+            Column(Modifier.weight(1f).padding(start = 16.dp)) {
+                SkeletonBlock(Modifier.fillMaxWidth(0.85f).height(14.dp))
+                SkeletonBlock(Modifier.padding(top = 6.dp).fillMaxWidth(0.5f).height(14.dp))
+                SkeletonBlock(Modifier.padding(top = 14.dp).fillMaxWidth(0.6f).height(11.dp))
+            }
         }
     }
 }
 
-/** A row of [AiringNextCardSkeleton]s, staggered in — Home's "Airing next" first-load state. */
+/** A horizontally-scrolling row of [AiringNextCardSkeleton]s — same carousel shape as the
+ *  real [AiringNextRow] (each card individually boxed, sized to fillParentMaxWidth so the
+ *  next card peeks in from the edge), not the old single-shared-container skeleton. */
 @Composable
 fun AiringNextRowSkeleton() {
-    Row(horizontalArrangement = Arrangement.spacedBy(11.dp)) {
-        repeat(3) { i -> StaggeredItem(i) { AiringNextCardSkeleton() } }
+    LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        items(3) { i -> StaggeredItem(i) { AiringNextCardSkeleton(modifier = Modifier.fillParentMaxWidth(0.94f)) } }
     }
 }
 

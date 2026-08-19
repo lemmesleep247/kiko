@@ -132,7 +132,7 @@ import kotlinx.coroutines.launch
                             StackListRow(s, vm) { openStack(s) }
                             // Same subtle row separator My List / Discover search results use
                             // (see SearchResultRow's divider) — this list was missing it.
-                            if (index < vm.stacksHomeRecent.lastIndex) HorizontalDivider(modifier = Modifier.padding(start = 100.dp), thickness = 1.dp, color = c.muted.copy(alpha = .15f))
+                            if (index < vm.stacksHomeRecent.lastIndex) HorizontalDivider(modifier = Modifier.padding(start = 100.dp), thickness = 1.dp, color = c.cardBorder)
                         }
                     }
                 }
@@ -151,9 +151,12 @@ import kotlinx.coroutines.launch
     val c = LocalKikoColors.current
     Row(Modifier.fillMaxWidth().padding(top = 22.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(title, style = MaterialTheme.typography.titleMedium, color = c.ink, modifier = Modifier.weight(1f))
-        TextButton(onClick = onSeeAll, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
-            Text("See all", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = c.accent)
-        }
+        // Same circular arrow affordance as Home/Discover/Detail's SectionTitle — see there
+        // for why (Play Store-style section header link).
+        IconButton(
+            onClick = onSeeAll,
+            modifier = Modifier.size(34.dp).clip(kikoCircleShape()).background(c.surface).border(1.dp, c.cardBorder, kikoCircleShape()),
+        ) { Icon(Icons.Default.ArrowForward, "See all", tint = c.ink, modifier = Modifier.size(16.dp)) }
     }
 }
 
@@ -210,7 +213,7 @@ import kotlinx.coroutines.launch
                         StaggeredItem(index, staggerSeen) {
                             Column {
                                 StackListRow(s, vm) { openStack(s) }
-                                if (index < vm.stacksBrowseResults.lastIndex) HorizontalDivider(modifier = Modifier.padding(start = 100.dp), thickness = 1.dp, color = c.muted.copy(alpha = .15f))
+                                if (index < vm.stacksBrowseResults.lastIndex) HorizontalDivider(modifier = Modifier.padding(start = 100.dp), thickness = 1.dp, color = c.cardBorder)
                             }
                         }
                     }

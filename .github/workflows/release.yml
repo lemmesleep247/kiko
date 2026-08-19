@@ -1,0 +1,141 @@
+name: Build & Release APK
+
+on:
+  push:
+    tags:
+      - "v*"
+
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing Git tag to build (for example: v1.0.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build signed release APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          yes | sdkmanager --licenses > /dev/null || true
+
+      - name: Create local.properties
+        env:
+          MAL_CLIENT_ID: ${{ secrets.MAL_CLIENT_ID }}
+        run: |
+          echo "MAL_CLIENT_ID=${MAL_CLIENT_ID}" > local.properties
+
+      - name: Make Gradle executable
+        run: chmod +x ./gradlew
+
+      - name: Verify version tag
+        run: |
+          TAG=$(git describe --tags --abbrev=0)
+          echo "Building tag: ${TAG}"
+
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid tag format: ${TAG}"
+            echo "Expected format: v1.2.3"
+            exit 1
+          fi
+
+      - name: Build release APK
+        run: ./gradlew clean assembleRelease --no-daemon
+
+      - name: Decode release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 --decode > release.keystore
+
+      - name: Locate unsigned APK
+        id: apk
+        run: |
+          APK=$(find app/build/outputs/apk/release -type f -name "*.apk" | head -n 1)
+
+          if [ -z "$APK" ]; then
+            echo "No APK found!"
+            find app/build/outputs -type f || true
+            exit 1
+          fi
+
+          echo "Found APK: $APK"
+          echo "input=$APK" >> "$GITHUB_OUTPUT"
+
+      - name: Zipalign APK
+        run: |
+          APK="${{ steps.apk.outputs.input }}"
+          ALIGNED="app/build/outputs/apk/release/kiko-release-aligned.apk"
+
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" \
+            -v -p 4 \
+            "$APK" \
+            "$ALIGNED"
+
+      - name: Sign APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          ALIGNED="app/build/outputs/apk/release/kiko-release-aligned.apk"
+          SIGNED="app/build/outputs/apk/release/kiko-release.apk"
+
+          cp "$ALIGNED" "$SIGNED"
+
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign \
+            --ks release.keystore \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass "pass:$KEYSTORE_PASSWORD" \
+            --key-pass "pass:$KEY_PASSWORD" \
+            --out "$SIGNED" \
+            "$ALIGNED"
+
+      - name: Verify APK signature
+        run: |
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose \
+            app/build/outputs/apk/release/kiko-release.apk
+
+      - name: Rename APK
+        run: |
+          TAG=$(git describe --tags --abbrev=0)
+          VERSION="${TAG#v}"
+
+          mv \
+            app/build/outputs/apk/release/kiko-release.apk \
+            "app/build/outputs/apk/release/Kiko-${VERSION}.apk"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=$(git describe --tags --abbrev=0)
+          VERSION="${TAG#v}"
+
+          gh release create "$TAG" \
+            "app/build/outputs/apk/release/Kiko-${VERSION}.apk" \
+            --title "Kiko ${VERSION}" \
+            --generate-notes

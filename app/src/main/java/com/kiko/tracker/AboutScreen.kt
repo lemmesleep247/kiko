@@ -55,7 +55,7 @@ import kotlin.math.sqrt
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp)) {
         Row(Modifier.fillMaxWidth().padding(top = 20.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack, modifier = Modifier.size(38.dp).clip(RoundedCornerShape(kikoCorner(13.dp))).background(c.surface).border(1.dp, c.cardBorder, RoundedCornerShape(kikoCorner(13.dp)))) { Icon(Icons.Default.ArrowBack, "Back", tint = c.ink) }
+            IconButton(onClick = onBack, modifier = Modifier.size(38.dp).clip(RoundedCornerShape(kikoCorner(13.dp))).background(c.surfaceContainerHigh)) { Icon(Icons.Default.ArrowBack, "Back", tint = c.ink) }
             Text("About", style = MaterialTheme.typography.titleLarge, color = c.ink, modifier = Modifier.padding(start = 12.dp))
         }
         Column(Modifier.fillMaxWidth().padding(top = 28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -89,17 +89,17 @@ import kotlin.math.sqrt
                 }
             },
             trailingContent = { if (updateChecking) CircularProgressIndicator(Modifier.size(18.dp), color = c.primary, strokeWidth = 2.dp) else Icon(Icons.Default.ChevronRight, null, tint = c.muted) },
-            colors = ListItemDefaults.colors(containerColor = c.surface),
+            colors = ListItemDefaults.colors(containerColor = c.surfaceContainer),
             modifier = Modifier.clip(RoundedCornerShape(kikoCorner(16.dp))).kikoClickable(enabled = !updateChecking, onClick = onCheckForUpdate),
         )
         Spacer(Modifier.height(28.dp))
         // Community links row
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-            IconButton(onClick = { CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse("https://github.com/SyHaqi/kiko")) }, modifier = Modifier.size(50.dp).clip(RoundedCornerShape(kikoCorner(16.dp))).background(c.surface).border(1.dp, c.cardBorder, RoundedCornerShape(kikoCorner(16.dp)))) {
+            IconButton(onClick = { CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse("https://github.com/SyHaqi/kiko")) }, modifier = Modifier.size(50.dp).clip(RoundedCornerShape(kikoCorner(16.dp))).background(c.surfaceContainerHigh)) {
                 Icon(painterResource(R.drawable.ic_github), "GitHub", tint = c.ink)
             }
             Spacer(Modifier.width(24.dp))
-            IconButton(onClick = { CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse("https://discord.gg/KZYQHpDWKH")) }, modifier = Modifier.size(50.dp).clip(RoundedCornerShape(kikoCorner(16.dp))).background(c.surface).border(1.dp, c.cardBorder, RoundedCornerShape(kikoCorner(16.dp)))) {
+            IconButton(onClick = { CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse("https://discord.gg/KZYQHpDWKH")) }, modifier = Modifier.size(50.dp).clip(RoundedCornerShape(kikoCorner(16.dp))).background(c.surfaceContainerHigh)) {
                 Icon(painterResource(R.drawable.ic_discord), "Discord", tint = c.ink)
             }
         }
@@ -335,10 +335,22 @@ private val ScoreBarSlotHeight = 96.dp
 // horizontally instead of squeezing. Every year between the earliest and latest release
 // gets a column — including zero-count years — so the shape of the timeline (and any
 // gaps in it) reads correctly rather than only showing years that happen to have data.
-// Bars use a single fixed, hardcoded color independent of the theme's accent, distinct
-// from both the coral-to-teal score gradient and the categorical ChartPalette wedges.
+// Bars sweep through a fixed, hardcoded gradient (indigo at the earliest year to
+// magenta at the most recent) the same way scoreBarColor sweeps coral-to-teal — so the
+// timeline reads as a gradient instead of one flat color, while staying a clearly
+// different hue family from both the score gradient and the violet ChartPalette wedges.
+// Same slot height as ScoreBarsCore (96dp) so the two charts sit at the same scale and
+// the differences in bar height between years are actually visible side by side.
 
-val YearBarColor = Color(0xFF6C56D9) // fixed violet, unrelated to the user's chosen accent
+private const val YearGradientStartHue = 235f  // indigo — earliest year
+private const val YearGradientEndHue = 320f    // magenta — most recent year
+private const val YearGradientSaturation = 0.58f
+private const val YearGradientLightness = 0.54f
+
+fun yearBarColor(t: Float): Color {
+    val hue = YearGradientStartHue + t * (YearGradientEndHue - YearGradientStartHue)
+    return hslColor(hue, YearGradientSaturation, YearGradientLightness)
+}
 
 @Composable fun YearDistributionChart(items: List<MediaItem>, c: KikoColors, onYearClick: ((Int) -> Unit)? = null) {
     // "Compatible with year": tolerate any startDate that begins with a plausible
@@ -348,12 +360,20 @@ val YearBarColor = Color(0xFF6C56D9) // fixed violet, unrelated to the user's ch
         .filter { it in 1900..2100 }
         .groupingBy { it }.eachCount()
     if (counts.isEmpty()) { Text("Not enough data yet.", color = c.muted, fontSize = 12.sp); return }
-    val years = (counts.keys.min()..counts.keys.max()).toList()
+    // Most recent year first — descending left to right, matching YearFilterRow's chip
+    // order (sortedDescending()) so the chart and the filter chips read the same way.
+    val years = (counts.keys.max() downTo counts.keys.min()).toList()
+    val minYear = years.min()
+    val maxYear = years.max()
     val maxCount = counts.values.max()
-    val barSlotHeight = 56.dp
+    val barSlotHeight = ScoreBarSlotHeight
     LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(vertical = 2.dp)) {
         items(years, key = { it }) { year ->
             val count = counts[year] ?: 0
+            // Gradient position is tied to the year itself (earliest = indigo, latest =
+            // magenta), independent of the list's display order, so reversing the chart
+            // above doesn't flip which end of the gradient each year gets.
+            val t = if (maxYear > minYear) (year - minYear).toFloat() / (maxYear - minYear) else 0f
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier.width(30.dp).let { m -> if (onYearClick != null && count > 0) m.clickable { onYearClick(year) } else m },
@@ -362,7 +382,7 @@ val YearBarColor = Color(0xFF6C56D9) // fixed violet, unrelated to the user's ch
                 Box(Modifier.fillMaxWidth().height(barSlotHeight), contentAlignment = Alignment.BottomCenter) {
                     Box(
                         Modifier.fillMaxWidth().height((count.toFloat() / maxCount * barSlotHeight.value).dp.coerceAtLeast(if (count > 0) 4.dp else 1.dp))
-                            .clip(RoundedCornerShape(kikoCorner(4.dp))).background(if (count > 0) YearBarColor else c.surfaceLow)
+                            .clip(RoundedCornerShape(kikoCorner(4.dp))).background(if (count > 0) yearBarColor(t) else c.surfaceLow)
                     )
                 }
                 Spacer(Modifier.height(4.dp))

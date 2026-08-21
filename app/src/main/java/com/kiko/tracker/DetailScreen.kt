@@ -72,7 +72,7 @@ data class DetailScreenActions(
     val onOpenRecommended: (RecommendedEntry) -> Unit = {},
     val onLoadStatusDistribution: (MediaItem, (StatusDistribution) -> Unit, () -> Unit) -> Unit = { _, _, onDone -> onDone() },
     val onOpenScoreStats: (MediaItem) -> Unit = {},
-    val onLoadCharacters: (MediaItem, (List<CharacterEntry>) -> Unit, () -> Unit) -> Unit = { _, _, onDone -> onDone() },
+    val onLoadCharacters: (MediaItem, (List<CharacterEntry>) -> Unit, () -> Unit, () -> Unit) -> Unit = { _, _, onDone, _ -> onDone() },
     val onLoadReviews: (MediaItem, (List<ReviewEntry>) -> Unit, () -> Unit) -> Unit = { _, _, onDone -> onDone() },
     val onOpenReview: (ReviewEntry) -> Unit = {},
     val onOpenReviewList: (String, String) -> Unit = { _, _ -> },
@@ -161,7 +161,15 @@ data class DetailScreenActions(
     // Characters row (also feeds the Japanese Voice Actors row below) — seeded
     // from cache so it doesn't blank out and reload on every remount either.
     var characters by remember(item.id) { mutableStateOf(cachedSnapshot?.characters ?: emptyList()) }
-    LaunchedEffect(item.id) { actions.onLoadCharacters(item, { chars -> characters = chars }, {}) }
+    // Tracks a failed fetch (network/DNS/etc.) separately from "no characters listed",
+    // so a blocked/broken request shows a retryable message instead of just vanishing.
+    // charactersRetryKey bumping re-keys the LaunchedEffect below to fire the fetch again.
+    var charactersFailed by remember(item.id) { mutableStateOf(false) }
+    var charactersRetryKey by remember(item.id) { mutableStateOf(0) }
+    LaunchedEffect(item.id, charactersRetryKey) {
+        charactersFailed = false
+        actions.onLoadCharacters(item, { chars -> characters = chars }, {}, { charactersFailed = true })
+    }
     var reviews by remember(item.id) { mutableStateOf(cachedSnapshot?.reviews ?: emptyList()) }
     LaunchedEffect(item.id) { actions.onLoadReviews(item, { reviews = it }, {}) }
     // Recheck cover gallery non-blocking — seeded from cache too.
@@ -405,7 +413,7 @@ data class DetailScreenActions(
                     // Community rank/popularity stats
                     if (item.rank > 0 || item.popularity > 0 || item.listUsers > 0) {
                         SectionTitle("Statistics", "", {})
-                        Card(shape = RoundedCornerShape(kikoCorner(24.dp)), colors = CardDefaults.cardColors(containerColor = c.surface), border = BorderStroke(1.dp, c.cardBorder), modifier = Modifier.fillMaxWidth()) {
+                        Card(shape = RoundedCornerShape(kikoCorner(24.dp)), colors = CardDefaults.cardColors(containerColor = c.surfaceContainer), modifier = Modifier.fillMaxWidth()) {
                             Row(Modifier.fillMaxWidth().padding(vertical = 20.dp)) {
                                 if (item.rank > 0) StatBlock(Modifier.weight(1f), "#${item.rank}", "Rank")
                                 if (item.popularity > 0) StatBlock(Modifier.weight(1f), "#${item.popularity}", "Popularity")
@@ -429,12 +437,12 @@ data class DetailScreenActions(
                     }
                     if (details.isNotEmpty()) {
                         SectionTitle("Details", "", {})
-                        Card(shape = RoundedCornerShape(kikoCorner(24.dp)), colors = CardDefaults.cardColors(containerColor = c.surface), border = BorderStroke(1.dp, c.cardBorder), modifier = Modifier.fillMaxWidth()) {
+                        Card(shape = RoundedCornerShape(kikoCorner(24.dp)), colors = CardDefaults.cardColors(containerColor = c.surfaceContainer), modifier = Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) {
                                 details.forEachIndexed { i, (label, value) ->
                                     val isCreatorRow = (label == "Studio" || label == "Author") && item.creator.isNotBlank()
                                     InfoRow(label, value, onClick = if (isCreatorRow) { { actions.onCreatorClick(item.creator) } } else null)
-                                    if (i != details.lastIndex) HorizontalDivider(color = c.cardBorder)
+                                    if (i != details.lastIndex) HorizontalDivider(color = c.outlineVariant)
                                 }
                             }
                         }
@@ -442,12 +450,12 @@ data class DetailScreenActions(
 
                     if (item.synonyms.isNotEmpty()) {
                         SectionTitle("Alternative titles", "", {})
-                        Card(shape = RoundedCornerShape(kikoCorner(24.dp)), colors = CardDefaults.cardColors(containerColor = c.surface), border = BorderStroke(1.dp, c.cardBorder), modifier = Modifier.fillMaxWidth()) {
+                        Card(shape = RoundedCornerShape(kikoCorner(24.dp)), colors = CardDefaults.cardColors(containerColor = c.surfaceContainer), modifier = Modifier.fillMaxWidth()) {
                             SelectionContainer {
                                 Column(Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) {
                                     item.synonyms.forEachIndexed { i, name ->
                                         Text(name, color = c.ink, fontSize = 13.sp, modifier = Modifier.fillMaxWidth().padding(vertical = 11.dp))
-                                        if (i != item.synonyms.lastIndex) HorizontalDivider(color = c.cardBorder)
+                                        if (i != item.synonyms.lastIndex) HorizontalDivider(color = c.outlineVariant)
                                     }
                                 }
                             }
@@ -458,6 +466,24 @@ data class DetailScreenActions(
                         SectionTitle("Characters", "See cast", { actions.onOpenReviewList(malCharactersUrl(item), itemDisplayTitle) })
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             itemsIndexed(characters, key = { _, it -> it.malId }) { i, ch -> StaggeredItem(i, charactersSeen) { CharacterCard(ch, uriHandler) } }
+                        }
+                    } else if (charactersFailed) {
+                        // Fetch itself failed (as opposed to the title just having no cast
+                        // listed) — surface it instead of silently hiding the section, since
+                        // that's the difference between "no data" and "something's blocking
+                        // this" (e.g. a network-level filter on the user's WiFi).
+                        SectionTitle("Characters", "", {})
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(kikoCorner(16.dp)))
+                                .background(c.surfaceContainer)
+                                .kikoClickable { charactersRetryKey++ }
+                                .padding(horizontal = 16.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Default.Refresh, null, tint = c.muted, modifier = Modifier.size(16.dp))
+                            Text("Couldn't load cast — tap to retry", color = c.muted, fontSize = 13.sp, modifier = Modifier.padding(start = 8.dp))
                         }
                     }
                     // Japanese cast only, one row — characters without a listed Japanese VA
@@ -473,7 +499,7 @@ data class DetailScreenActions(
                     val themes = openingThemes.map { "OP" to it } + endingThemes.map { "ED" to it }
                     if (themes.isNotEmpty()) {
                         SectionTitle("Theme songs", "", {})
-                        Card(shape = RoundedCornerShape(kikoCorner(24.dp)), colors = CardDefaults.cardColors(containerColor = c.surface), border = BorderStroke(1.dp, c.cardBorder), modifier = Modifier.fillMaxWidth()) {
+                        Card(shape = RoundedCornerShape(kikoCorner(24.dp)), colors = CardDefaults.cardColors(containerColor = c.surfaceContainer), modifier = Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) {
                                 themes.forEachIndexed { i, (kind, text) ->
                                     Row(
@@ -484,7 +510,7 @@ data class DetailScreenActions(
                                         Text(text, color = c.ink, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(end = 8.dp))
                                         Icon(Icons.Default.PlayArrow, "Search on YouTube", tint = c.muted, modifier = Modifier.size(18.dp))
                                     }
-                                    if (i != themes.lastIndex) HorizontalDivider(color = c.cardBorder)
+                                    if (i != themes.lastIndex) HorizontalDivider(color = c.outlineVariant)
                                 }
                             }
                         }
@@ -529,7 +555,7 @@ data class DetailScreenActions(
                     // Reuse status bar styling
                     statusDistribution?.takeIf { it.total > 0 }?.let { dist ->
                         SectionTitle("Status distribution", "See more", { actions.onOpenScoreStats(item) }, icon = Icons.Default.BarChart)
-                        Card(shape = RoundedCornerShape(kikoCorner(24.dp)), colors = CardDefaults.cardColors(containerColor = c.surface), border = BorderStroke(1.dp, c.cardBorder), modifier = Modifier.fillMaxWidth()) {
+                        Card(shape = RoundedCornerShape(kikoCorner(24.dp)), colors = CardDefaults.cardColors(containerColor = c.surfaceContainer), modifier = Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(horizontal = 18.dp, vertical = 16.dp)) {
                                 StatBar("Watching", dist.watching, dist.total, c, statusColor("Watching"))
                                 StatBar("Completed", dist.completed, dist.total, c, statusColor("Completed"))
@@ -638,7 +664,7 @@ fun parseMalDeepLink(uri: Uri): Pair<Int, MediaType>? {
 ) {
     val c = LocalKikoColors.current
     Column(
-        Modifier.width(140.dp).clip(RoundedCornerShape(kikoCorner(18.dp))).background(c.surface).border(1.dp, c.cardBorder, RoundedCornerShape(kikoCorner(18.dp)))
+        Modifier.width(140.dp).clip(RoundedCornerShape(kikoCorner(18.dp))).background(c.surfaceContainerHigh)
             .let { m -> onClick?.let { m.kikoClickable(enabled = !loading, onClick = it) } ?: m },
     ) {
         Box(Modifier.fillMaxWidth().aspectRatio(2f / 3f).clip(RoundedCornerShape(topStart = kikoCorner(18.dp), topEnd = kikoCorner(18.dp))).background(c.surfaceLow)) {
@@ -686,7 +712,7 @@ fun parseMalDeepLink(uri: Uri): Pair<Int, MediaType>? {
 @Composable fun PersonCard(imageUrl: String, fallbackLetter: String, name: String, role: String, onClick: (() -> Unit)?) {
     val c = LocalKikoColors.current
     Column(
-        Modifier.width(88.dp).clip(RoundedCornerShape(kikoCorner(14.dp))).background(c.surface).border(1.dp, c.cardBorder, RoundedCornerShape(kikoCorner(14.dp)))
+        Modifier.width(88.dp).clip(RoundedCornerShape(kikoCorner(14.dp))).background(c.surfaceContainerHigh)
             .let { m -> onClick?.let { m.kikoClickable(onClick = it) } ?: m },
     ) {
         Box(Modifier.fillMaxWidth().aspectRatio(3f / 4f).clip(RoundedCornerShape(topStart = kikoCorner(14.dp), topEnd = kikoCorner(14.dp))).background(c.surfaceLow)) {
@@ -717,7 +743,7 @@ fun parseMalDeepLink(uri: Uri): Pair<Int, MediaType>? {
 @Composable fun ReviewCard(entry: ReviewEntry, onClick: () -> Unit) {
     val c = LocalKikoColors.current
     Column(
-        Modifier.width(260.dp).clip(RoundedCornerShape(kikoCorner(18.dp))).background(c.surface).border(1.dp, c.cardBorder, RoundedCornerShape(kikoCorner(18.dp))).kikoClickable(onClick = onClick).padding(14.dp),
+        Modifier.width(260.dp).clip(RoundedCornerShape(kikoCorner(18.dp))).background(c.surfaceContainerHigh).kikoClickable(onClick = onClick).padding(14.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (entry.userImage.isNotBlank()) {
@@ -774,7 +800,7 @@ fun parseMalDeepLink(uri: Uri): Pair<Int, MediaType>? {
     if (confirmDelete) {
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
-            containerColor = c.surface,
+            containerColor = c.surfaceContainerHigh,
             title = { Text("Remove from your list?", color = c.ink) },
             text = { Text("Are you sure you want to remove \"${item.title}\" from your list? This also removes it from your MyAnimeList account.", color = c.muted) },
             confirmButton = { TextButton(onClick = { confirmDelete = false; onDelete() }, colors = ButtonDefaults.textButtonColors(contentColor = c.danger)) { Text("Remove") } },
@@ -808,7 +834,7 @@ fun parseMalDeepLink(uri: Uri): Pair<Int, MediaType>? {
             }
         }
     }
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState, containerColor = c.background, contentWindowInsets = { WindowInsets(0, 0, 0, 0) }) {
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState, containerColor = c.surfaceContainerLow, contentWindowInsets = { WindowInsets(0, 0, 0, 0) }) {
         Column(Modifier.padding(horizontal = 22.dp).padding(bottom = 28.dp).imePadding().verticalScroll(rememberScrollState())) {
             Row(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 22.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                 TextButton(onClick = { confirmDelete = true }, colors = ButtonDefaults.textButtonColors(contentColor = c.danger)) { Text("Delete") }
@@ -840,7 +866,7 @@ fun parseMalDeepLink(uri: Uri): Pair<Int, MediaType>? {
 
             Text(if (item.type == MediaType.Anime) "Episodes watched" else "Chapters read", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = c.ink, modifier = Modifier.padding(top = 20.dp))
             Row(
-                Modifier.fillMaxWidth().padding(top = 9.dp).clip(RoundedCornerShape(kikoCorner(16.dp))).background(c.surface).border(1.dp, c.cardBorder, RoundedCornerShape(kikoCorner(16.dp))).padding(horizontal = 6.dp),
+                Modifier.fillMaxWidth().padding(top = 9.dp).clip(RoundedCornerShape(kikoCorner(16.dp))).background(c.surfaceContainerHigh).padding(horizontal = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
@@ -876,7 +902,7 @@ fun parseMalDeepLink(uri: Uri): Pair<Int, MediaType>? {
 
             Text(rewatchWord, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = c.ink, modifier = Modifier.padding(top = 20.dp))
             Row(
-                Modifier.fillMaxWidth().padding(top = 9.dp).clip(RoundedCornerShape(kikoCorner(16.dp))).background(c.surface).border(1.dp, c.cardBorder, RoundedCornerShape(kikoCorner(16.dp))).padding(horizontal = 16.dp, vertical = 4.dp),
+                Modifier.fillMaxWidth().padding(top = 9.dp).clip(RoundedCornerShape(kikoCorner(16.dp))).background(c.surfaceContainerHigh).padding(horizontal = 16.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
@@ -884,7 +910,7 @@ fun parseMalDeepLink(uri: Uri): Pair<Int, MediaType>? {
                 Switch(checked = rewatching, onCheckedChange = { rewatching = it }, colors = SwitchDefaults.colors(checkedThumbColor = c.onPrimary, checkedTrackColor = c.primary))
             }
             Row(
-                Modifier.fillMaxWidth().padding(top = 9.dp).clip(RoundedCornerShape(kikoCorner(16.dp))).background(c.surface).border(1.dp, c.cardBorder, RoundedCornerShape(kikoCorner(16.dp))).padding(horizontal = 6.dp),
+                Modifier.fillMaxWidth().padding(top = 9.dp).clip(RoundedCornerShape(kikoCorner(16.dp))).background(c.surfaceContainerHigh).padding(horizontal = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
@@ -899,7 +925,7 @@ fun parseMalDeepLink(uri: Uri): Pair<Int, MediaType>? {
                 placeholder = { Text("Comma separated, e.g. comfort watch, rewatch", color = c.muted) },
                 minLines = 3, maxLines = 6,
                 shape = RoundedCornerShape(kikoCorner(16.dp)),
-                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = c.primary, unfocusedBorderColor = c.cardBorder, unfocusedContainerColor = c.surface, focusedContainerColor = c.surface, focusedTextColor = c.ink, unfocusedTextColor = c.ink),
+                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = c.primary, unfocusedBorderColor = c.outline, unfocusedContainerColor = c.surface, focusedContainerColor = c.surface, focusedTextColor = c.ink, unfocusedTextColor = c.ink),
                 modifier = Modifier.fillMaxWidth().padding(top = 9.dp),
             )
 
@@ -909,7 +935,7 @@ fun parseMalDeepLink(uri: Uri): Pair<Int, MediaType>? {
                 placeholder = { Text("Write a note about this entry", color = c.muted) },
                 minLines = 3, maxLines = 6,
                 shape = RoundedCornerShape(kikoCorner(16.dp)),
-                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = c.primary, unfocusedBorderColor = c.cardBorder, unfocusedContainerColor = c.surface, focusedContainerColor = c.surface, focusedTextColor = c.ink, unfocusedTextColor = c.ink),
+                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = c.primary, unfocusedBorderColor = c.outline, unfocusedContainerColor = c.surface, focusedContainerColor = c.surface, focusedTextColor = c.ink, unfocusedTextColor = c.ink),
                 modifier = Modifier.fillMaxWidth().padding(top = 9.dp),
             )
         }
@@ -923,7 +949,7 @@ fun parseMalDeepLink(uri: Uri): Pair<Int, MediaType>? {
     Column(modifier) {
         Text(label, color = c.muted, fontSize = 12.sp, modifier = Modifier.padding(bottom = 6.dp))
         Row(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(kikoCorner(14.dp))).background(c.surface).border(1.dp, c.cardBorder, RoundedCornerShape(kikoCorner(14.dp))).kikoClickable { showPicker = true }.padding(horizontal = 14.dp, vertical = 13.dp),
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(kikoCorner(14.dp))).background(c.surfaceContainerHigh).kikoClickable { showPicker = true }.padding(horizontal = 14.dp, vertical = 13.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {

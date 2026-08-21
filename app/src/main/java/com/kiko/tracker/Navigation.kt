@@ -310,18 +310,14 @@ fun TopScreen.isFullPage() = this is TopScreen.Detail || this is TopScreen.Ranki
     SyncSystemBars(darkTheme, c.background)
     CompositionLocalProvider(LocalKikoColors provides c, LocalTitleLanguage provides vm.titleLanguage) {
         MaterialTheme(
-            colorScheme = if (darkTheme)
-                darkColorScheme(primary = c.primary, onPrimary = c.onPrimary, primaryContainer = c.primaryContainer, background = c.background, surface = c.surface, onBackground = c.ink, onSurface = c.ink)
-            else
-                lightColorScheme(primary = c.primary, onPrimary = c.onPrimary, primaryContainer = c.primaryContainer, background = c.background, surface = c.surface, onBackground = c.ink, onSurface = c.ink),
-            typography = Typography(
-                displaySmall = TextStyle(fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 38.sp, lineHeight = 40.sp),
-                headlineSmall = TextStyle(fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 24.sp),
-                titleLarge = TextStyle(fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 21.sp),
-                titleMedium = TextStyle(fontFamily = AppFont, fontWeight = FontWeight.Bold, fontSize = 16.sp),
-                bodyMedium = TextStyle(fontFamily = AppFont, fontSize = 14.sp)
-            ),
-            shapes = Shapes()
+            // Full Expressive ColorScheme generated from the same KikoColors this
+            // frame is already using — every role (containers, surface tiers,
+            // outline, inverse, error) comes from one seed instead of the previous
+            // 7-role approximation, so MaterialTheme.colorScheme and
+            // LocalKikoColors.current always agree.
+            colorScheme = c.toMaterialColorScheme(darkTheme),
+            typography = KikoTypography,
+            shapes = KikoShapes,
         ) {
             Scaffold(
                 containerColor = c.background,
@@ -382,7 +378,7 @@ fun TopScreen.isFullPage() = this is TopScreen.Detail || this is TopScreen.Ranki
                                     onOpenRecommended = { rec -> vm.openRecommended(context, rec) { fetched -> openRelatedDetail(screen.item, fetched) } },
                                     onLoadStatusDistribution = { forItem, onFound, onDone -> vm.loadStatusDistribution(context, forItem, onFound, onDone) },
                                     onOpenScoreStats = { scoreStatsOpen = it },
-                                    onLoadCharacters = { forItem, onFound, onDone -> vm.loadCharacters(forItem, onFound, onDone) },
+                                    onLoadCharacters = { forItem, onFound, onDone, onError -> vm.loadCharacters(forItem, onFound, onDone, onError) },
                                     onLoadReviews = { forItem, onFound, onDone -> vm.loadReviews(forItem, onFound, onDone) },
                                     onOpenReview = { rev -> reviewOpen = rev to screen.item.title },
                                     onOpenReviewList = { url, _ -> CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(url)) },

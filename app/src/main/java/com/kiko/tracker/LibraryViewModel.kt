@@ -118,6 +118,36 @@ class LibraryViewModel : ViewModel() {
     var discoverBrowseScrollIndex by mutableStateOf(0); private set
     var discoverBrowseScrollOffset by mutableStateOf(0); private set
     fun saveDiscoverBrowseScroll(index: Int, offset: Int) { discoverBrowseScrollIndex = index; discoverBrowseScrollOffset = offset }
+    // Bumped by BottomBar on a double-tap of the Discover tab, and by the search icon on the
+    // Discover landing page. DiscoverResultsScreen watches this and focuses + opens the
+    // keyboard on its search field each time it changes. A plain counter (not a boolean) so
+    // two triggers in a row without the screen ever "reading" the first one in between still
+    // both register as distinct focus requests.
+    //
+    // discoverSearchFocusConsumedTick tracks the last tick value the screen has already
+    // acted on. This lives here rather than as local composable state because the screen
+    // itself gets torn down and recreated every time the person switches tabs away and
+    // back — a plain `remember` inside the screen would forget it ever handled a given
+    // tick and re-fire on every remount, popping the keyboard back open just from
+    // returning to an in-progress search. Keeping "have I handled this tick" at the
+    // ViewModel level means it only ever fires once per real double-tap/icon-tap, no
+    // matter how many times the screen itself gets recreated in between.
+    var discoverSearchFocusTick by mutableStateOf(0); private set
+    var discoverSearchFocusConsumedTick by mutableStateOf(0); private set
+    fun requestDiscoverSearchFocus() { discoverSearchFocusTick++ }
+    fun consumeDiscoverSearchFocus() { discoverSearchFocusConsumedTick = discoverSearchFocusTick }
+    // Jumps to the search-results page with the keyboard up — used by the search icon on
+    // the Discover landing page, and by double-tapping the Discover tab. Only actually
+    // starts a new blank search when there isn't one already running (i.e. still on the
+    // Browse landing page, where a real search-results page has to be spun up from
+    // scratch). If a search is already open — the common double-tap case, jumping back to
+    // an in-progress search from another tab — this leaves the existing query and results
+    // alone and just re-requests focus, since a double-tap here reads as "let me keep
+    // typing", not "start over".
+    fun openDiscoverSearch(context: Context) {
+        if (discoverMode == DiscoverMode.Browse) runDiscoverSearch(context, "", discoverTypeFilter)
+        requestDiscoverSearchFocus()
+    }
     // Clubs tab state — survives navigating into a club and back, same as
     // Discover results above: query, loaded pages, and scroll position all
     // live here instead of in ClubsScreen's own remember{} blocks, which get
@@ -1283,7 +1313,15 @@ class LibraryViewModel : ViewModel() {
                 val apiDeferred = async { runCatching { MalApi(context).detail(intId, type) }.getOrNull() }
                 val scrapeDeferred = async { runCatching { MalDetailScrapeApi().fetch(intId, type) }.getOrNull() }
                 val fresh = apiDeferred.await()
+                // Genuine user-submitted recs, from the title's dedicated "/userrecs" page —
+                // needs fresh.title for MAL's slug routing (see fetchUserRecommendations), so
+                // this starts once apiDeferred resolves rather than alongside it; it still runs
+                // concurrently with scrapeDeferred below rather than waiting on that too.
+                val userRecsDeferred = async {
+                    runCatching { MalDetailScrapeApi().fetchUserRecommendations(intId, type, fresh?.title.orEmpty()) }.getOrNull()
+                }
                 val scraped = scrapeDeferred.await()
+                val userRecs = userRecsDeferred.await()
                 // Only cached on a successful detail() call — same as the old individual
                 // backfills, so a failed fetch still retries next time instead of caching
                 // a permanent blank.
@@ -1310,12 +1348,30 @@ class LibraryViewModel : ViewModel() {
                 val apiRelated = fresh?.related ?: emptyList()
                 val scrapedRelated = scraped?.related ?: emptyList()
                 cache.related = (scrapedRelated + apiRelated).distinctBy { if (it.malId > 0) "id:${it.malType}:${it.malId}" else "title:${it.malType}:${it.title}" }
-                // Recommended: the website's Recommendations widget is a superset of what the
-                // official API can give us (includes MAL's own algorithmic "AutoRec" picks the
-                // API never exposes), so it's preferred; the official API call's own
-                // recommendations field is kept only as a fallback in case the scrape came
-                // back empty. Cached even when empty, same reasoning as related above.
-                cache.recommended = scraped?.recommended?.ifEmpty { fresh?.recommended ?: emptyList() } ?: (fresh?.recommended ?: emptyList())
+                // Recommended: real user recs from the title's own "/userrecs" page (real
+                // votes, never AutoRec — see fetchUserRecommendations) plus whatever the main
+                // detail page's Recommendations slider adds on top, AutoRec included — more
+                // picks in the row is the point, not filtering AutoRec out entirely. A title
+                // that shows up in both sources keeps its real vote count (from userRecs)
+                // rather than getting relabeled AutoRec — but its cover comes from the slider
+                // when the slider also lists it. The slider's own markup is one flat <img>
+                // per entry, while the "/userrecs" page nests each pairing inside its own
+                // table alongside every write-up for it; that extra structure is where a
+                // pairing's cover has been seen coming back wrong (e.g. showing this title's
+                // own poster instead of the recommended title's), so the simpler, verified
+                // source wins whenever both have the entry. Falls back to the official API's
+                // own recommendations field only if both sources come up empty. Cached even
+                // when empty, same reasoning as related above.
+                val realRecs = userRecs ?: emptyList()
+                val sliderRecs = scraped?.recommended ?: emptyList()
+                val sliderByKey = sliderRecs.associateBy { it.malId to it.malType }
+                val merged = realRecs.map { real ->
+                    val sliderCover = sliderByKey[real.malId to real.malType]?.cover
+                    if (!sliderCover.isNullOrBlank()) real.copy(cover = sliderCover) else real
+                }
+                val mergedKeys = merged.map { it.malId to it.malType }.toSet()
+                cache.recommended = (merged + sliderRecs.filterNot { (it.malId to it.malType) in mergedKeys })
+                    .ifEmpty { fresh?.recommended ?: emptyList() }
             }
         }
         detailFetchInFlight[key] = deferred
@@ -1376,17 +1432,18 @@ class LibraryViewModel : ViewModel() {
     // Actors row on the detail page — staff is no longer shown there, so this no
     // longer fans out a second fetchStaff() network call alongside it).
     // onError fires when the fetch itself fails (network/DNS/etc — see
-    // TenraiApi.fetchCharacters) as opposed to a title that just has no characters
-    // listed, so the detail page can show a retryable failure state instead of
-    // silently treating a blocked request the same as "no cast data".
+    // MalDetailScrapeApi.fetchCharacters, which scrapes MAL's own "/characters"
+    // subpage directly rather than going through Tenrai/Jikan) as opposed to a title
+    // that just has no characters listed, so the detail page can show a retryable
+    // failure state instead of silently treating a blocked request the same as "no
+    // cast data".
     fun loadCharacters(item: MediaItem, onFound: (List<CharacterEntry>) -> Unit, onDone: () -> Unit = {}, onError: () -> Unit = {}) {
         val cache = detailCache(item.id, item.type)
         cache.characters?.let { onFound(it); onDone(); return }
         val intId = item.id.toIntOrNull()
         if (intId == null) { onDone(); return }
-        val kind = if (item.type == MediaType.Anime) "anime" else "manga"
         viewModelScope.launch {
-            runCatching { TenraiApi().fetchCharacters(kind, intId) }
+            runCatching { MalDetailScrapeApi().fetchCharacters(intId, item.type, item.title) }
                 .onSuccess { chars ->
                     cache.characters = chars
                     if (chars.isNotEmpty()) onFound(chars)

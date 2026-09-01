@@ -86,19 +86,14 @@ import kotlinx.coroutines.launch
         if (mode == ForumMode.Topics) {
             ForumTopicsScreen(vm, context, onOpenTopic)
         } else {
-            val sharedHeader: @Composable () -> Unit = {
-                SwitcherHeader(vm.communityTab, CommunityTab.entries.toList(), { it.label }, { vm.selectCommunityTab(context, it) }, 0.dp, "Switch between Forums and Clubs") {
-                    Avatar(vm.malProfile?.picture.orEmpty(), vm.malProfile?.name.orEmpty()) { rect -> vm.profileDrawerOpen = true; vm.profileMenuAnchor = rect }
-                }
-            }
             AnimatedContent(
                 vm.communityTab,
                 transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(120)) },
                 label = "community-tab",
             ) { tab ->
                 when (tab) {
-                    CommunityTab.Forums -> ForumBoardsScreen(vm, context, sharedHeader)
-                    CommunityTab.Clubs -> ClubsScreen(vm, onOpenClub, sharedHeader)
+                    CommunityTab.Forums -> ForumBoardsScreen(vm, context)
+                    CommunityTab.Clubs -> ClubsScreen(vm, onOpenClub)
                 }
             }
         }
@@ -106,9 +101,13 @@ import kotlinx.coroutines.launch
 }
 // Forums landing page
 
-@Composable fun ForumBoardsScreen(vm: LibraryViewModel, context: Context, header: @Composable () -> Unit) {
+@Composable fun ForumBoardsScreen(vm: LibraryViewModel, context: Context) {
     val c = LocalKikoColors.current
     var query by remember { mutableStateOf("") }
+    // Search bar starts collapsed into an icon beside the avatar, same as the List tab
+    // (see ExpandableSearchHeader) — expanding it takes over the whole header row instead
+    // of sitting underneath as its own always-visible field.
+    var searchExpanded by remember { mutableStateOf(false) }
     // Restore board list scroll
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = vm.forumBoardsScrollIndex, initialFirstVisibleItemScrollOffset = vm.forumBoardsScrollOffset)
     val saveScroll = { vm.saveForumBoardsScroll(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset) }
@@ -117,9 +116,21 @@ import kotlinx.coroutines.launch
     PullToRefreshBox(isRefreshing = vm.forumBoardsLoading, onRefresh = { vm.loadForumBoards(context, force = true) }, modifier = Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = if (showGoToTop) 90.dp else 24.dp)) {
             item {
-                header()
-                // Search hands off topics
-                SearchField(query, { query = it }, "Search topics", onSearch = { if (query.isNotBlank()) { saveScroll(); vm.runForumSearch(context, query) } })
+                ExpandableSearchHeader(
+                    current = vm.communityTab,
+                    options = CommunityTab.entries.toList(),
+                    labelFor = { it.label },
+                    onSelect = { vm.selectCommunityTab(context, it) },
+                    query = query,
+                    onQueryChange = { query = it },
+                    onSearch = { if (query.isNotBlank()) { saveScroll(); vm.runForumSearch(context, query) } },
+                    onClear = { query = "" },
+                    expanded = searchExpanded,
+                    onExpandedChange = { expanded -> searchExpanded = expanded; if (!expanded) query = "" },
+                    hint = "Search topics",
+                    horizontalPadding = 0.dp,
+                    switchDescription = "Switch between Forums and Clubs",
+                ) { Avatar(vm.malProfile?.picture.orEmpty(), vm.malProfile?.name.orEmpty()) { rect -> vm.profileDrawerOpen = true; vm.profileMenuAnchor = rect } }
             }
             if (vm.authChecked && !vm.signedIn) {
                 item { Text("Sign in from Profile to browse the MAL forums", color = c.muted, modifier = Modifier.fillMaxWidth().padding(top = 40.dp), textAlign = TextAlign.Center) }
@@ -156,11 +167,43 @@ import kotlinx.coroutines.launch
 }
 // Subboard count pill
 
+// MAL gives every forum board its own FontAwesome glyph in the sidebar/board-list markup
+// (bullhorn for Announcements, gavel for Guidelines, life-ring for Support, and so on —
+// see the board-list HTML). This app previously rendered every single board with the same
+// generic Icons.Default.Forum glyph, which made the board list visually flat and harder to
+// scan at a glance. Mapping board id -> a Material Icons Extended equivalent restores that
+// per-board distinctiveness while keeping the app's own look: same tint/background/shape as
+// before, only the glyph itself changes. Ids come straight from MAL's own board query params
+// (e.g. "?board=5"), which is the only stable identifier — titles occasionally get re-worded.
+// Falls back to the original generic Forum glyph for any board id not covered here (keeps
+// future/unlisted boards, like a new one MAL adds later, from rendering as a blank icon).
+private fun forumBoardIcon(board: ForumBoard) = when (board.id) {
+    5 -> Icons.Default.Campaign            // Updates & Announcements
+    14 -> Icons.Default.Gavel              // MAL Guidelines & FAQ
+    17 -> Icons.Default.EditNote           // DB Modification Requests
+    3 -> Icons.Default.SupportAgent        // Support
+    4 -> Icons.Default.Lightbulb           // Suggestions
+    13 -> Icons.Default.EmojiEvents        // MAL Contests
+    15 -> Icons.Default.Article            // News Discussion
+    16 -> Icons.Default.CardGiftcard       // Anime & Manga Recommendations
+    19 -> Icons.Default.Folder             // Series Discussion
+    1 -> Icons.Default.Tv                  // Anime Discussion
+    2 -> Icons.Default.MenuBook            // Manga Discussion
+    8 -> Icons.Default.ChatBubble          // Introductions
+    7 -> Icons.Default.SportsEsports       // Games, Computers & Tech Support
+    10 -> Icons.Default.MusicNote          // Music & Entertainment
+    11 -> Icons.Default.LocalCafe          // Casual Discussion
+    12 -> Icons.Default.PhotoLibrary       // Creative Corner
+    9 -> Icons.Default.Extension           // Forum Games
+    6 -> Icons.Default.LocalBar            // Current Events
+    else -> Icons.Default.Forum
+}
+
 @Composable fun ForumBoardRow(board: ForumBoard, onClick: () -> Unit) {
     val c = LocalKikoColors.current
     Row(Modifier.fillMaxWidth().kikoClickable(onClick = onClick).padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(42.dp).clip(RoundedCornerShape(kikoCorner(14.dp))).background(c.primaryContainer), contentAlignment = Alignment.Center) {
-            Icon(Icons.Default.Forum, null, tint = c.primary, modifier = Modifier.size(20.dp))
+            Icon(forumBoardIcon(board), null, tint = c.primary, modifier = Modifier.size(20.dp))
         }
         Column(Modifier.weight(1f).padding(start = 12.dp)) {
             Text(board.title, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = c.ink)

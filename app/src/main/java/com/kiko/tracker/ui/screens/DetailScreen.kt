@@ -84,6 +84,7 @@ import com.kiko.tracker.data.model.verdict
 import com.kiko.tracker.data.model.verdictColor
 import com.kiko.tracker.ui.components.CoverStatusMark
 import com.kiko.tracker.ui.components.GenreChip
+import com.kiko.tracker.ui.components.LinkifiedText
 import com.kiko.tracker.ui.components.SkeletonBlock
 import com.kiko.tracker.ui.components.StatBlock
 import com.kiko.tracker.ui.components.centerChip
@@ -133,11 +134,20 @@ data class DetailScreenActions(
     val onLoadFeaturedArticles: (MediaItem, (List<FeaturedArticleEntry>) -> Unit, () -> Unit) -> Unit = { _, _, onDone -> onDone() },
     val onLoadLinks: (MediaItem, (List<Pair<String, String>>) -> Unit, () -> Unit) -> Unit = { _, _, onDone -> onDone() },
     val onOpenTopic: (Int, String) -> Unit = { _, _ -> },
-    val onOpenFeaturedArticle: (String) -> Unit = {},
+    val onOpenFeaturedArticle: (String, String) -> Unit = { _, _ -> },
     val onLoadCharacters: (MediaItem, (List<CharacterEntry>) -> Unit, () -> Unit, () -> Unit) -> Unit = { _, _, onDone, _ -> onDone() },
     val onLoadReviews: (MediaItem, (List<ReviewEntry>) -> Unit, () -> Unit) -> Unit = { _, _, onDone -> onDone() },
     val onOpenReview: (ReviewEntry) -> Unit = {},
-    val onOpenReviewList: (String, String) -> Unit = { _, _ -> },
+    // Opens the "See more"
+    // reviews sheet. Takes the
+    // item (rather than a
+    // URL) since the sheet
+    // re-runs onLoadReviews, which just
+    // returns the same cached
+    // list the row already
+    // fetched instead of hitting
+    // the network again.
+    val onOpenReviewList: (MediaItem) -> Unit = {},
     val onGenreClick: (String) -> Unit = {},
     val onCreatorClick: (String) -> Unit = {},
     // Opens a Characters-row entry's
@@ -153,6 +163,14 @@ data class DetailScreenActions(
     val onLeaveRelatedScroll: (Int, Int) -> Unit = { _, _ -> },
     val onLeaveRecommendedScroll: (Int, Int) -> Unit = { _, _ -> },
     val onLeaveCharactersScroll: (Int, Int) -> Unit = { _, _ -> },
+    // Reviews row's own scroll
+    // position — same reasoning
+    // as onLeaveCharactersScroll above: without
+    // this, opening one of
+    // the row's reviews and
+    // coming back snaps it
+    // to the first item.
+    val onLeaveReviewsScroll: (Int, Int) -> Unit = { _, _ -> },
     // Kicks off the best-effort
     // time (see LibraryViewModel.loadAiringEpisode) —
     // airingInfo param below, same
@@ -198,7 +216,7 @@ data class DetailScreenActions(
     }
 }
 
-@Composable fun DetailScreen(item: MediaItem, actions: DetailScreenActions, relatedLoadingId: Int? = null, recommendedLoadingId: Int? = null, castLoadingId: Int? = null, initialScroll: Pair<Int, Int> = 0 to 0, initialRelatedScroll: Pair<Int, Int> = 0 to 0, initialRecommendedScroll: Pair<Int, Int> = 0 to 0, initialCharactersScroll: Pair<Int, Int> = 0 to 0, myListStatus: Map<Pair<Int, MediaType>, WatchStatus> = emptyMap(), cachedSnapshot: LibraryViewModel.DetailCacheSnapshot? = null, airingInfo: AiringInfo? = null) {
+@Composable fun DetailScreen(item: MediaItem, actions: DetailScreenActions, relatedLoadingId: Int? = null, recommendedLoadingId: Int? = null, castLoadingId: Int? = null, initialScroll: Pair<Int, Int> = 0 to 0, initialRelatedScroll: Pair<Int, Int> = 0 to 0, initialRecommendedScroll: Pair<Int, Int> = 0 to 0, initialCharactersScroll: Pair<Int, Int> = 0 to 0, initialReviewsScroll: Pair<Int, Int> = 0 to 0, myListStatus: Map<Pair<Int, MediaType>, WatchStatus> = emptyMap(), cachedSnapshot: LibraryViewModel.DetailCacheSnapshot? = null, airingInfo: AiringInfo? = null) {
     LaunchedEffect(item.id) { actions.onLoadAiringEpisode(item) }
     val c = LocalKikoColors.current
     var synopsisExpanded by remember(item.id) { mutableStateOf(false) }
@@ -303,6 +321,9 @@ data class DetailScreenActions(
     // cache-seeded state here, opening
     // snapped the Characters row
     val charactersListState = remember(item.id) { LazyListState(initialCharactersScroll.first, initialCharactersScroll.second) }
+    // Same idea for the
+    // Reviews row.
+    val reviewsListState = remember(item.id) { LazyListState(initialReviewsScroll.first, initialReviewsScroll.second) }
     // Save spot on leave
     DisposableEffect(item.id) {
         onDispose {
@@ -310,6 +331,7 @@ data class DetailScreenActions(
             actions.onLeaveRelatedScroll(relatedListState.firstVisibleItemIndex, relatedListState.firstVisibleItemScrollOffset)
             actions.onLeaveRecommendedScroll(recommendedListState.firstVisibleItemIndex, recommendedListState.firstVisibleItemScrollOffset)
             actions.onLeaveCharactersScroll(charactersListState.firstVisibleItemIndex, charactersListState.firstVisibleItemScrollOffset)
+            actions.onLeaveReviewsScroll(reviewsListState.firstVisibleItemIndex, reviewsListState.firstVisibleItemScrollOffset)
         }
     }
     // Share single decoded painter.
@@ -503,15 +525,14 @@ data class DetailScreenActions(
                     if (meta.isNotEmpty()) Text(meta.joinToString("   ·   "), color = c.muted, fontSize = 13.sp, modifier = Modifier.padding(top = 16.dp))
 
                     SectionTitle("Synopsis", "", {})
-                    Text(
+                    LinkifiedText(
                         item.synopsis.ifBlank { "No synopsis available yet." },
                         color = if (item.synopsis.isBlank()) c.muted else c.ink,
                         fontSize = 14.sp, lineHeight = 21.sp,
                         maxLines = if (synopsisExpanded) Int.MAX_VALUE else 3,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier
-                            .animateContentSize()
-                            .let { if (item.synopsis.isNotBlank()) it.clickable { synopsisExpanded = !synopsisExpanded } else it },
+                        modifier = Modifier.animateContentSize(),
+                        onClick = if (item.synopsis.isNotBlank()) { { synopsisExpanded = !synopsisExpanded } } else null,
                     )
 
                     // "Available At" — official
@@ -675,9 +696,10 @@ data class DetailScreenActions(
 
                     key("reviews") {
                         if (reviews.isNotEmpty()) {
-                            SectionTitle("Reviews", "See more", { actions.onOpenReviewList(malReviewsUrl(item), itemDisplayTitle) })
-                            LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                itemsIndexed(reviews, key = { _, it -> it.malId }) { i, rev -> StaggeredItem(i, reviewsSeen) { ReviewCard(rev, onClick = { actions.onOpenReview(rev) }) } }
+                            val previewReviews = reviews.take(3)
+                            SectionTitle("Reviews", if (reviews.size > 3) "See more" else "", { actions.onOpenReviewList(item) })
+                            LazyRow(state = reviewsListState, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                itemsIndexed(previewReviews, key = { _, it -> it.malId }) { i, rev -> StaggeredItem(i, reviewsSeen) { ReviewCard(rev, onClick = { actions.onOpenReview(rev) }) } }
                             }
                         }
                     }
@@ -714,7 +736,7 @@ data class DetailScreenActions(
 
                     if (item.background.isNotBlank()) {
                         SectionTitle("Background", "", {})
-                        Text(item.background, color = c.ink, fontSize = 14.sp, lineHeight = 21.sp)
+                        LinkifiedText(item.background, color = c.ink, fontSize = 14.sp, lineHeight = 21.sp)
                     }
 
                     // Reuse status bar styling
@@ -776,13 +798,14 @@ data class DetailScreenActions(
                     }
 
                     // Recent Featured Articles —
-                    // MalDetailScrapeApi.parseFeaturedArticles's own limit). No
-                    // for these, so tapping
+                    // MalDetailScrapeApi.parseFeaturedArticles's own limit).
+                    // Tapping opens FeaturedArticleScreen in-app (see
+                    // Navigation.kt's featuredArticleOpen).
                     key("detailFeaturedArticles") {
                         if (featuredArticles.isNotEmpty()) {
                             SectionTitle("Recent Featured Articles", "", {})
                             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                featuredArticles.forEach { article -> DetailFeaturedArticleCard(article) { actions.onOpenFeaturedArticle(article.url) } }
+                                featuredArticles.forEach { article -> DetailFeaturedArticleCard(article) { actions.onOpenFeaturedArticle(article.url, article.title) } }
                             }
                         }
                     }
@@ -833,22 +856,23 @@ data class DetailScreenActions(
 // discussion-count the way a
 // discussion, which reuse ForumTopicScreen),
 // externally — see DetailScreenActions.onOpenFeaturedArticle.
+// Same flush-thumbnail treatment as CompanyNewsCard above — see its comment.
 @Composable fun DetailFeaturedArticleCard(article: FeaturedArticleEntry, onClick: () -> Unit) {
     val c = LocalKikoColors.current
     Row(
         Modifier.fillMaxWidth()
+            .height(138.dp)
             .clip(RoundedCornerShape(kikoCorner(20.dp))).background(c.surfaceContainer)
-            .kikoClickable(onClick = onClick)
-            .padding(12.dp),
+            .kikoClickable(onClick = onClick),
     ) {
-        Box(Modifier.width(76.dp).aspectRatio(2f / 3f).clip(RoundedCornerShape(kikoCorner(14.dp))).background(c.surfaceContainerHigh)) {
+        Box(Modifier.fillMaxHeight().aspectRatio(2f / 3f).clip(RoundedCornerShape(kikoCorner(14.dp))).background(c.surfaceContainerHigh)) {
             if (article.image.isNotBlank()) {
                 AsyncImage(model = article.image, contentDescription = article.title, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
             } else {
                 Text(article.title.take(1).uppercase(), fontWeight = FontWeight.Bold, fontSize = 24.sp, color = c.muted, modifier = Modifier.align(Alignment.Center))
             }
         }
-        Column(Modifier.padding(start = 14.dp).weight(1f)) {
+        Column(Modifier.padding(start = 14.dp, end = 12.dp, top = 12.dp, bottom = 12.dp).weight(1f)) {
             Text(article.title, fontWeight = FontWeight.Bold, fontSize = 14.sp, lineHeight = 19.sp, color = c.ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
             if (article.snippet.isNotBlank()) {
                 Text(article.snippet, color = c.muted, fontSize = 12.sp, lineHeight = 17.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp))
@@ -1180,6 +1204,11 @@ fun parseMalProfileLink(url: String): MalProfileLink? {
                             status = s
                             // Auto-fill progress to the
                             if (s == WatchStatus.Completed && item.total > 0) progress = item.total
+                            // Auto-fill start date to
+                            // an already-set date is
+                            if ((s == WatchStatus.Watching || s == WatchStatus.Reading) && startDate.isBlank()) {
+                                startDate = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+                            }
                             statusScope.centerChip(statusListState, index)
                         },
                         label = { Text(s.displayLabel(item.type)) },
@@ -1278,6 +1307,12 @@ fun parseMalProfileLink(url: String): MalProfileLink? {
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Text(if (value.isBlank()) "Not set" else formatUserDate(value), color = if (value.isBlank()) c.muted else c.ink, fontWeight = FontWeight.Medium, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(end = 6.dp))
+            // Only offer clearing once
+            // a date has actually
+            if (value.isNotBlank()) {
+                IconButton(onClick = { onPick("") }, modifier = Modifier.size(20.dp)) { Icon(Icons.Default.Close, "Clear $label", tint = c.muted, modifier = Modifier.size(16.dp)) }
+                Spacer(Modifier.width(6.dp))
+            }
             Icon(Icons.Default.DateRange, null, tint = c.muted, modifier = Modifier.size(18.dp))
         }
     }

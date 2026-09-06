@@ -47,6 +47,7 @@ import com.kiko.tracker.data.model.LocalTitleLanguage
 import com.kiko.tracker.data.model.MediaItem
 import com.kiko.tracker.data.model.WatchStatus
 import com.kiko.tracker.data.model.sortedForDiscover
+import com.kiko.tracker.ui.components.LinkifiedText
 import com.kiko.tracker.ui.components.SkeletonBlock
 import com.kiko.tracker.ui.components.kikoFilterChipColors
 import com.kiko.tracker.ui.theme.ListGridCardSkeleton
@@ -208,13 +209,12 @@ private val CompanyFormatOrder = listOf("TV", "Movie", "OVA", "ONA", "Special", 
 
                     if (company.about.isNotBlank()) {
                         SectionTitle("About", "", {})
-                        Text(
+                        LinkifiedText(
                             company.about, color = c.ink, fontSize = 14.sp, lineHeight = 21.sp,
                             maxLines = if (aboutExpanded) Int.MAX_VALUE else 3,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier
-                                .animateContentSize()
-                                .clickable { aboutExpanded = !aboutExpanded },
+                            modifier = Modifier.animateContentSize(),
+                            onClick = { aboutExpanded = !aboutExpanded },
                         )
                     }
 
@@ -321,7 +321,10 @@ fun companyLinkIconRes(url: String): Int? {
         "youtube" in host -> R.drawable.ic_youtube
         "facebook" in host -> R.drawable.ic_facebook
         "instagram" in host -> R.drawable.ic_instagram
-        "twitter" in host || host == "x.com" || host.endsWith(".x.com") -> R.drawable.ic_x
+        "twitter" in host || host == "x.com" || host.endsWith(".x.com") || host == "t.co" -> R.drawable.ic_x
+        "discord" in host || host == "official discord" -> R.drawable.ic_discord
+        "steampowered" in host -> R.drawable.ic_steam
+        "reddit" in host || host == "redd.it" -> R.drawable.ic_reddit
         else -> null
     }
 }
@@ -394,18 +397,18 @@ fun companyLinkIconRes(url: String): Int? {
     val c = LocalKikoColors.current
     Row(
         Modifier.fillMaxWidth()
+            .height(138.dp)
             .clip(RoundedCornerShape(kikoCorner(20.dp))).background(c.surfaceContainer)
-            .kikoClickable(onClick = onClick)
-            .padding(12.dp),
+            .kikoClickable(onClick = onClick),
     ) {
-        Box(Modifier.width(76.dp).aspectRatio(2f / 3f).clip(RoundedCornerShape(kikoCorner(14.dp))).background(c.surfaceContainerHigh)) {
+        Box(Modifier.fillMaxHeight().aspectRatio(2f / 3f).clip(RoundedCornerShape(kikoCorner(14.dp))).background(c.surfaceContainerHigh)) {
             if (news.image.isNotBlank()) {
                 AsyncImage(model = news.image, contentDescription = news.title, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             } else {
                 Text(news.title.take(1).uppercase(), fontWeight = FontWeight.Bold, fontSize = 24.sp, color = c.muted, modifier = Modifier.align(Alignment.Center))
             }
         }
-        Column(Modifier.padding(start = 14.dp).weight(1f)) {
+        Column(Modifier.padding(start = 14.dp, end = 12.dp, top = 12.dp, bottom = 12.dp).weight(1f)) {
             Text(news.title, fontWeight = FontWeight.Bold, fontSize = 14.sp, lineHeight = 19.sp, color = c.ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
             if (news.snippet.isNotBlank()) {
                 Text(news.snippet, color = c.muted, fontSize = 12.sp, lineHeight = 17.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp))

@@ -48,7 +48,6 @@ import com.kiko.tracker.data.api.StackSummary
 import com.kiko.tracker.data.api.StackTitleEntry
 import com.kiko.tracker.data.api.StacksApi
 import com.kiko.tracker.data.api.TenraiApi
-import com.kiko.tracker.data.api.firstImageUrl
 import com.kiko.tracker.data.model.CharacterDetail
 import com.kiko.tracker.data.model.CharacterEntry
 import com.kiko.tracker.data.model.CharacterSummary
@@ -62,6 +61,7 @@ import com.kiko.tracker.data.model.DiscoverFilters
 import com.kiko.tracker.data.model.DiscoverMode
 import com.kiko.tracker.data.model.DiscoverSort
 import com.kiko.tracker.data.model.FeaturedArticleEntry
+import com.kiko.tracker.data.model.FeaturedTag
 import com.kiko.tracker.data.model.ForumMode
 import com.kiko.tracker.data.model.ListSort
 import com.kiko.tracker.data.model.ListViewMode
@@ -272,6 +272,15 @@ class LibraryViewModel : ViewModel() {
         var relatedScroll: Pair<Int, Int> = 0 to 0,
         var recommendedScroll: Pair<Int, Int> = 0 to 0,
         var charactersScroll: Pair<Int, Int> = 0 to 0,
+        var reviewsRowScroll: Pair<Int, Int> = 0 to 0,
+        // Separate from reviewsRowScroll above:
+        // this is the vertical
+        // list inside the "See
+        // more" sheet, a different
+        // LazyList entirely from the
+        // horizontal row on the
+        // page itself.
+        var reviewListScroll: Pair<Int, Int> = 0 to 0,
     )
     private val detailCaches = mutableMapOf<Pair<String, MediaType>, DetailCache>()
     private fun detailCache(id: String, type: MediaType) = detailCaches.getOrPut(id to type) { DetailCache() }
@@ -327,6 +336,26 @@ class LibraryViewModel : ViewModel() {
     // recommended hops above.
     fun getCharactersRowScroll(id: String, type: MediaType) = detailCache(id, type).charactersScroll
     fun saveCharactersRowScroll(id: String, type: MediaType, index: Int, offset: Int) { detailCache(id, type).charactersScroll = index to offset }
+    // Same idea for the
+    // Reviews row on the
+    // page itself.
+    fun getReviewsRowScroll(id: String, type: MediaType) = detailCache(id, type).reviewsRowScroll
+    fun saveReviewsRowScroll(id: String, type: MediaType, index: Int, offset: Int) { detailCache(id, type).reviewsRowScroll = index to offset }
+    // The vertical list inside
+    // the "See more" reviews
+    // sheet — kept separate
+    // from the row above
+    // (different LazyList) and read
+    // back even after the
+    // sheet is torn down
+    // by opening a single
+    // review's full page on
+    // top of it, so
+    // backing out of that
+    // restores the sheet exactly
+    // where the user left it.
+    fun getReviewListScroll(id: String, type: MediaType) = detailCache(id, type).reviewListScroll
+    fun saveReviewListScroll(id: String, type: MediaType, index: Int, offset: Int) { detailCache(id, type).reviewListScroll = index to offset }
     // Same idea for a
     // coming back from an
     private val stackDetailScrollPositions = mutableMapOf<Int, Pair<Int, Int>>()
@@ -471,6 +500,10 @@ class LibraryViewModel : ViewModel() {
     // Instant cached check read
     fun loadCachedUpdate(context: Context) {
         val checker = AppUpdateChecker(context)
+        // No download is running this early in the app's lifecycle
+        // (updateDownloadProgress is only non-null while one is active),
+        // so it's always safe to clear out a leftover APK here.
+        if (updateDownloadProgress == null) checker.cleanupDownloadedApk()
         val cached = checker.cached() ?: return
         // Drop stale cached version
         if (!checker.isStillNewer(cached.version)) { checker.clearCache(); return }
@@ -1564,22 +1597,6 @@ class LibraryViewModel : ViewModel() {
             board?.let { openForumBoard(context, it) }
         }
     }
-    // Jump to the Announcements
-    // forumBoardIcon (ForumsScreen.kt) already keys
-    // ids are the stable
-    // re-worded. Used by Home's
-    fun openAnnouncementsBoard(context: Context) {
-        viewModelScope.launch {
-            val cached = forumCategories.flatMap { it.boards }.firstOrNull { it.id == 5 }
-            val board = cached ?: run {
-                val fetched = runCatching { MalApi(context).forumBoards() }.getOrNull() ?: return@run null
-                forumCategories = fetched; forumBoardsLoaded = true
-                fetched.flatMap { it.boards }.firstOrNull { it.id == 5 }
-            }
-            board?.let { openForumBoard(context, it) }
-        }
-    }
-
     // Home snapshots row state
     var newsSnapshots by mutableStateOf<List<NewsSnapshot>>(emptyList()); private set
     var newsSnapshotsLoading by mutableStateOf(false); private set
@@ -1620,45 +1637,96 @@ class LibraryViewModel : ViewModel() {
         }
     }
 
-    // Latest MAL announcement (board
-    // announcement card — a
-    // same forumTopics endpoint the
-    var homeAnnouncement by mutableStateOf<ForumTopic?>(null); private set
-    var homeAnnouncementLoading by mutableStateOf(false); private set
-    private var homeAnnouncementLoaded = false
-    fun loadHomeAnnouncement(context: Context, force: Boolean = false) {
-        val api = MalApi(context)
-        if ((homeAnnouncementLoaded && !force) || !api.signedIn) return
-        homeAnnouncementLoaded = true
-        homeAnnouncementLoading = true
+    // Full "Featured Articles" browse grid — opened from Home's "View
+    // more". Same page/hasMore/loadingMore/scroll-restore shape as the
+    // forum topics list above, just backed by MalDetailScrapeApi's
+    // scraped pagination instead of a signed-in JSON API, so it works
+    // whether or not the person is signed in.
+    var featuredArticles by mutableStateOf<List<FeaturedArticleEntry>>(emptyList()); private set
+    var featuredArticlesLoading by mutableStateOf(false); private set
+    var featuredArticlesLoadingMore by mutableStateOf(false); private set
+    var featuredArticlesHasMore by mutableStateOf(false); private set
+    var featuredArticlesError by mutableStateOf<String?>(null); private set
+    private var featuredArticlesPage = 1
+    private var featuredArticlesLoaded = false
+    var featuredArticlesScrollIndex by mutableStateOf(0); private set
+    var featuredArticlesScrollOffset by mutableStateOf(0); private set
+    fun saveFeaturedArticlesScroll(index: Int, offset: Int) { featuredArticlesScrollIndex = index; featuredArticlesScrollOffset = offset }
+
+    // Submitted text query — set by the search icon's expandable field.
+    // Mutually exclusive with the tag filter below (submitting a search
+    // clears any selected tag, and vice versa).
+    var featuredArticlesQuery by mutableStateOf(""); private set
+
+    // Tag-filter chip row — fed by fetchFeaturedTags() below, cached once
+    // like ForumsScreen's subboards. null slug means "All" (no tag filter).
+    var featuredTags by mutableStateOf<List<FeaturedTag>>(emptyList()); private set
+    private var featuredTagsLoaded = false
+    var featuredArticlesTagSlug by mutableStateOf<String?>(null); private set
+    fun loadFeaturedTags() {
+        if (featuredTagsLoaded) return
+        featuredTagsLoaded = true
         viewModelScope.launch {
-            runCatching {
-                // forumTopics sorts by sort=recent
-                // items.first() can be an
-                // reply rather than the
-                // without thumbnails and pick
-                // trusting list order.
-                val latest = api.forumTopics(boardId = 5, limit = 25).items
-                    .maxByOrNull { parseForumCreatedAtMillis(it.createdAt) } ?: return@runCatching null
-                // Thumbnail lookup only for
-                // batch — forumTopics(withThumbnails =
-                val image = runCatching { api.forumTopic(latest.id, limit = 1) }.getOrNull()
-                    ?.posts?.firstOrNull()?.body?.let { firstImageUrl(it) }
-                if (image != null) latest.copy(imageUrl = image) else latest
-            }
-                .onSuccess { homeAnnouncement = it }
-                // Fail silently, no banner
-                .onFailure { homeAnnouncementLoaded = false }
-            homeAnnouncementLoading = false
+            runCatching { MalDetailScrapeApi().fetchFeaturedTags() }
+                .onSuccess { featuredTags = it }
+                // Fail silently — chip row just stays empty, browse still works
+                .onFailure { featuredTagsLoaded = false }
         }
     }
+
+    // Picks which of the three "page of Featured Article news-units"
+    // endpoints (plain browse / tag filter / search) the grid is currently
+    // reading from, based on featuredArticlesQuery/featuredArticlesTagSlug.
+    private suspend fun fetchFeaturedArticlesPageForCurrentMode(page: Int) = when {
+        featuredArticlesQuery.isNotBlank() -> MalDetailScrapeApi().fetchFeaturedArticlesSearch(featuredArticlesQuery, page)
+        featuredArticlesTagSlug != null -> MalDetailScrapeApi().fetchFeaturedArticlesByTag(featuredArticlesTagSlug!!, page)
+        else -> MalDetailScrapeApi().fetchFeaturedArticlesPage(page)
+    }
+    fun loadFeaturedArticlesGrid(force: Boolean = false) {
+        if (featuredArticlesLoaded && !force) return
+        featuredArticlesLoaded = true
+        featuredArticlesPage = 1
+        featuredArticlesLoading = true
+        viewModelScope.launch {
+            runCatching { fetchFeaturedArticlesPageForCurrentMode(1) }
+                .onSuccess { featuredArticles = it.articles; featuredArticlesHasMore = it.hasMore; featuredArticlesError = null }
+                .onFailure { featuredArticlesLoaded = false; featuredArticlesError = it.message ?: "Could not load articles" }
+            featuredArticlesLoading = false
+        }
+    }
+    fun loadMoreFeaturedArticlesGrid() {
+        if (featuredArticlesLoading || featuredArticlesLoadingMore || !featuredArticlesHasMore) return
+        val nextPage = featuredArticlesPage + 1
+        featuredArticlesLoadingMore = true
+        viewModelScope.launch {
+            runCatching { fetchFeaturedArticlesPageForCurrentMode(nextPage) }
+                .onSuccess { featuredArticlesPage = nextPage; featuredArticles = featuredArticles + it.articles; featuredArticlesHasMore = it.hasMore }
+                .onFailure { featuredArticlesHasMore = false }
+            featuredArticlesLoadingMore = false
+        }
+    }
+
+    // Submits a text search — clears any active tag filter and reloads
+    // page 1 from myanimelist.net/featured/search.
+    fun searchFeaturedArticles(query: String) {
+        val trimmed = query.trim()
+        if (trimmed == featuredArticlesQuery) return
+        featuredArticlesQuery = trimmed
+        featuredArticlesTagSlug = null
+        loadFeaturedArticlesGrid(force = true)
+    }
+
+    // Selects a tag chip (or null for "All") — clears any active search
+    // and reloads page 1 from myanimelist.net/featured/tag/{slug}.
+    fun selectFeaturedArticlesTag(slug: String?) {
+        if (slug == featuredArticlesTagSlug) return
+        featuredArticlesTagSlug = slug
+        featuredArticlesQuery = ""
+        loadFeaturedArticlesGrid(force = true)
+    }
+
     // ForumTopic.createdAt format ("yyyy-MM-dd'T'HH:mm:ssXXX") —
     // (ForumsScreen.kt) already parses —
-    // can be picked by
-    private fun parseForumCreatedAtMillis(raw: String): Long =
-        runCatching { java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", java.util.Locale.US).parse(raw)?.time }.getOrNull() ?: 0L
-
-    // Related row loading id
     var relatedLoadingId by mutableStateOf<Int?>(null); private set
 
     // Recommended row loading id
@@ -1983,15 +2051,22 @@ class LibraryViewModel : ViewModel() {
         }
     }
 
-    // Load reviews row
+    // Load reviews (row shows
+    // the first 3, the
+    // "See more" sheet shows
+    // the rest of this
+    // same cached list) —
+    // scraped straight from MAL
+    // (see MalDetailScrapeApi.fetchReviews) since Tenrai/Jikan's
+    // reviews endpoint had started
+    // coming back empty.
     fun loadReviews(item: MediaItem, onFound: (List<ReviewEntry>) -> Unit, onDone: () -> Unit = {}) {
         val cache = detailCache(item.id, item.type)
         cache.reviews?.let { onFound(it); onDone(); return }
         val intId = item.id.toIntOrNull()
         if (intId == null) { onDone(); return }
-        val kind = if (item.type == MediaType.Anime) "anime" else "manga"
         viewModelScope.launch {
-            runCatching { TenraiApi().fetchReviews(kind, intId) }
+            runCatching { MalDetailScrapeApi().fetchReviews(intId, item.type, item.title) }
                 .onSuccess { cache.reviews = it; if (it.isNotEmpty()) onFound(it) }
             onDone()
         }

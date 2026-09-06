@@ -2,8 +2,6 @@
 
 package com.kiko.tracker.ui.screens
 
-import android.net.Uri
-import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -56,9 +54,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import kotlinx.coroutines.launch
-import com.kiko.tracker.data.api.ForumTopic
 import com.kiko.tracker.data.api.NewsSnapshot
 import com.kiko.tracker.data.model.DiscoverSort
+import com.kiko.tracker.data.model.FeaturedArticleEntry
 import com.kiko.tracker.data.model.ListSort
 import com.kiko.tracker.data.model.ListViewMode
 import com.kiko.tracker.data.model.MediaItem
@@ -77,10 +75,9 @@ import com.kiko.tracker.ui.components.Avatar
 import com.kiko.tracker.ui.components.Cover
 import com.kiko.tracker.ui.components.ExpandableSearchHeader
 import com.kiko.tracker.ui.components.statusColor
-import com.kiko.tracker.ui.theme.AiringNextCardSkeleton
 import com.kiko.tracker.ui.theme.AiringNextRowSkeleton
 import com.kiko.tracker.ui.theme.ContinueCardSkeleton
-import com.kiko.tracker.ui.theme.DetailFeaturedArticleCardSkeleton
+import com.kiko.tracker.ui.theme.HomeFeaturedArticleRowSkeleton
 import com.kiko.tracker.ui.theme.ListGridCardSkeleton
 import com.kiko.tracker.ui.theme.ListRowSkeletonGroup
 import com.kiko.tracker.ui.theme.LocalKikoColors
@@ -90,17 +87,19 @@ import com.kiko.tracker.ui.theme.accent
 import com.kiko.tracker.ui.theme.kikoClickable
 import com.kiko.tracker.ui.theme.kikoCombinedClickable
 import com.kiko.tracker.ui.theme.kikoCorner
+import com.kiko.tracker.ui.theme.kikoPillShape
+import com.kiko.tracker.ui.theme.pressScale
 import com.kiko.tracker.ui.theme.rememberStaggerMemory
 import com.kiko.tracker.viewmodel.LibraryViewModel
 
-@Composable fun HomeScreen(vm: LibraryViewModel, onOpenDetail: (MediaItem) -> Unit, onList: () -> Unit, onLocateInList: (MediaItem) -> Unit, onDiscover: () -> Unit, onRanking: () -> Unit, onSeasonal: () -> Unit, onSchedule: (java.time.DayOfWeek) -> Unit, onOpenTopic: (Int, String) -> Unit, onSeeNews: () -> Unit, onOpenStack: (Int, String) -> Unit, onOpenStacks: () -> Unit, onOpenAnnouncements: () -> Unit, onSignIn: () -> Unit, onEdit: (MediaItem) -> Unit = {}, selectedItem: MediaItem? = null) {
+@Composable fun HomeScreen(vm: LibraryViewModel, onOpenDetail: (MediaItem) -> Unit, onList: () -> Unit, onLocateInList: (MediaItem) -> Unit, onDiscover: () -> Unit, onRanking: () -> Unit, onSeasonal: () -> Unit, onSchedule: (java.time.DayOfWeek) -> Unit, onOpenTopic: (Int, String) -> Unit, onSeeNews: () -> Unit, onOpenStack: (Int, String) -> Unit, onOpenStacks: () -> Unit, onSignIn: () -> Unit, onEdit: (MediaItem) -> Unit = {}, selectedItem: MediaItem? = null, onSeeFeaturedArticles: () -> Unit = {}, onOpenFeaturedArticle: (String, String) -> Unit = { _, _ -> }) {
     val c = LocalKikoColors.current
     val context = LocalContext.current
-    LaunchedEffect(vm.signedIn) { vm.loadNewsSnapshots(context); vm.loadHomeAnnouncement(context) }
+    LaunchedEffect(vm.signedIn) { vm.loadNewsSnapshots(context) }
     LaunchedEffect(Unit) { vm.loadHomeFeaturedArticles() }
     // Testing swap: hide (not
     // MAL announcement card in
-    val showContinueCard = false
+    val showContinueCard = true
     // Was recomputing (filter +
     // including ones triggered by
     // background sync — instead
@@ -139,12 +138,12 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
     val showGoToTop by remember { derivedStateOf { listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 600 } }
     PullToRefreshBox(
         isRefreshing = vm.loading,
-        onRefresh = { vm.load(context); vm.loadNewsSnapshots(context, force = true); vm.loadHomeAnnouncement(context, force = true); vm.loadHomeFeaturedArticles(force = true) },
+        onRefresh = { vm.load(context); vm.loadNewsSnapshots(context, force = true); vm.loadHomeFeaturedArticles(force = true) },
         modifier = Modifier.fillMaxSize(),
     ) {
         LazyColumn(state = listState, contentPadding = PaddingValues(bottom = if (showGoToTop) 90.dp else 24.dp)) {
             item {
-                AppHeader("kiko") { Avatar(vm.malProfile?.picture.orEmpty(), vm.malProfile?.name.orEmpty()) { rect -> vm.profileDrawerOpen = true; vm.profileMenuAnchor = rect } }
+                AppHeader("kiko") { Avatar(vm.malProfile?.picture.orEmpty(), vm.malProfile?.name.orEmpty(), showUpdateBadge = vm.updateInfo != null) { rect -> vm.profileDrawerOpen = true; vm.profileMenuAnchor = rect } }
                 Column(Modifier.padding(horizontal = 20.dp)) {
                     // Use device current date
                     Text(
@@ -184,19 +183,6 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
                             ContinueCardSkeleton()
                         }
                     }
-                    // Latest MAL announcement, standing
-                    // sized (via AnnouncementCard's identical
-                    // AiringNextCard above it, so
-                    key("announcement") {
-                        val announcement = vm.homeAnnouncement
-                        if (announcement != null) {
-                            SectionTitle("MAL Announcement", "See more", click = onOpenAnnouncements)
-                            AnnouncementCard(announcement, onClick = { trackedOpenTopic(announcement.id, announcement.title) })
-                        } else if (vm.homeAnnouncementLoading) {
-                            SectionTitle("MAL Announcement", "See more", click = onOpenAnnouncements)
-                            AiringNextCardSkeleton(modifier = Modifier.fillMaxWidth())
-                        }
-                    }
                     // Home recent news row
                     key("snapshots") {
                         if (vm.newsSnapshots.isNotEmpty()) {
@@ -216,21 +202,20 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
                     // Top 3 MAL homepage
                     // (DetailFeaturedArticleCard) and "by <author>
                     // DetailScreen's own "Recent Featured
-                    // same way: no in-app
-                    // externally via a custom
+                    // "View more" opens the full FeaturedArticlesScreen
+                    // grid in-app (see Navigation.kt's featuredArticlesOpen);
+                    // tapping a card opens FeaturedArticleScreen directly.
                     key("featuredArticles") {
                         if (vm.homeFeaturedArticles.isNotEmpty()) {
-                            SectionTitle("Featured Articles", "View more", { CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse("https://myanimelist.net/featured")) })
-                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                vm.homeFeaturedArticles.forEach { article ->
-                                    DetailFeaturedArticleCard(article) { CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(article.url)) }
+                            SectionTitle("Featured Articles", "View more", onSeeFeaturedArticles)
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(11.dp)) {
+                                itemsIndexed(vm.homeFeaturedArticles, key = { _, it -> it.url }) { i, article ->
+                                    StaggeredItem(i) { HomeFeaturedArticleCard(article) { onOpenFeaturedArticle(article.url, article.title) } }
                                 }
                             }
                         } else if (vm.homeFeaturedArticlesLoading) {
-                            SectionTitle("Featured Articles", "View more", { CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse("https://myanimelist.net/featured")) })
-                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                repeat(3) { DetailFeaturedArticleCardSkeleton() }
-                            }
+                            SectionTitle("Featured Articles", "View more", onSeeFeaturedArticles)
+                            HomeFeaturedArticleRowSkeleton()
                         }
                     }
                     if (vm.authChecked && !vm.signedIn && !vm.loading) {
@@ -281,7 +266,13 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
             .kikoClickable { onOpenDetail(item) },
     ) {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 14.dp),
+            // Fixed height — same total as before (118dp cover + 14dp top/bottom
+            // padding = 146dp) — so every card in the row is the same size
+            // regardless of how much text a given item has. IntrinsicSize.Min
+            // was tried here instead but let short-content cards (no genre,
+            // one-line title) shrink the whole row and clip the episode/time
+            // line; a fixed height avoids that entirely.
+            Modifier.fillMaxWidth().height(146.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // overrideStatus: airingNext is discoverNewSeason
@@ -289,8 +280,11 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
             // lookup here is what
             // and disappear immediately after
             // whenever this row happens
-            Cover(item, Modifier.size(width = 84.dp, height = 118.dp), showStatus = true, overrideStatus = vm.trackedStatus(item))
-            Column(Modifier.weight(1f).padding(start = 16.dp)) {
+            // No padding here: the cover is flush against the card's
+            // left/top/bottom edges and fills the fixed row height above,
+            // so it reads as one piece with the card background.
+            Cover(item, Modifier.fillMaxHeight().aspectRatio(84f / 118f), showStatus = true, overrideStatus = vm.trackedStatus(item))
+            Column(Modifier.weight(1f).padding(start = 16.dp, end = 14.dp, top = 14.dp, bottom = 14.dp)) {
                 Text(item.displayTitle(), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = c.ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 if (item.genre.isNotBlank()) {
                     Text(item.genre, color = c.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 3.dp))
@@ -359,64 +353,55 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
 // List rather than opening
 // into the list, not
 
+// Same card shell as AiringNextCard (rounded surfaceContainer box, cover
+// flush against the left/top/bottom edges) — inlined here instead of
+// nesting ListRow, since ListRow's own padding would inset the cover
+// again and ListRow is shared by screens that aren't card-shaped.
 @Composable fun ContinueCard(item: MediaItem, vm: LibraryViewModel, onClick: (MediaItem) -> Unit, onLongPress: ((MediaItem) -> Unit)? = null, isSelected: Boolean = false, modifier: Modifier = Modifier) {
     val c = LocalKikoColors.current
+    val haptic = LocalHapticFeedback.current
+    LaunchedEffect(item.id) { vm.loadAiringEpisode(item) }
+    val confirmed = vm.getCachedAiring(item.id)
     Box(
         modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(kikoCorner(22.dp)))
-            .background(c.surfaceContainer),
-    ) {
-        ListRow(item, onClick, showType = false, onLongPress = onLongPress, isSelected = isSelected, showChevron = true, modifier = Modifier.padding(horizontal = 14.dp), vm = vm)
-    }
-}
-// Latest-announcement card standing in
-// above) — deliberately built
-// padding as AiringNextCard, rather
-// this shelf lines up
-// above it. Falls back
-// (true for most Announcements-board
-@Composable fun AnnouncementCard(topic: ForumTopic, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val c = LocalKikoColors.current
-    Box(
-        modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(kikoCorner(22.dp)))
-            .background(c.surfaceContainer)
-            .kikoClickable(onClick = onClick),
+            .background(if (isSelected) c.primaryContainer else c.surfaceContainer)
+            .kikoCombinedClickable(
+                onClick = { onClick(item) },
+                onLongClick = onLongPress?.let { edit -> { haptic.performHapticFeedback(HapticFeedbackType.LongPress); edit(item) } },
+            ),
     ) {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 14.dp),
+            // Fixed height matching the old ListRow-based card (92dp-wide cover +
+            // 14dp top/bottom padding = 156dp), so this card's overall size doesn't
+            // change — only the cover grows to fill it edge-to-edge.
+            Modifier.fillMaxWidth().height(156.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                Modifier
-                    .size(width = 84.dp, height = 118.dp)
-                    .clip(RoundedCornerShape(kikoCorner(14.dp)))
-                    .background(c.primaryContainer),
-                contentAlignment = Alignment.Center,
-            ) {
-                if (!topic.imageUrl.isNullOrBlank()) {
-                    AsyncImage(model = topic.imageUrl, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
-                } else {
-                    Icon(Icons.Default.Campaign, null, tint = c.onPrimaryContainer, modifier = Modifier.size(30.dp))
+            Cover(item, Modifier.fillMaxHeight().aspectRatio(92f / 128f), selected = isSelected)
+            Column(Modifier.weight(1f).padding(start = 16.dp, end = 6.dp, top = 14.dp, bottom = 14.dp)) {
+                Text(item.displayTitle(), fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = c.ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Row(Modifier.padding(top = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(item.genre, color = c.muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    if (item.myRating > 0) {
+                        Text("  ·  ", color = c.muted, fontSize = 13.sp)
+                        Icon(Icons.Default.Star, null, tint = Color(0xFFFFC107), modifier = Modifier.size(12.dp))
+                        Text(item.myRating.toString(), color = c.ink, fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.padding(start = 3.dp))
+                    }
+                }
+                if (item.total > 0) {
+                    LinearProgressIndicator(progress = { item.progress.toFloat() / item.total }, modifier = Modifier.fillMaxWidth(0.75f).padding(top = 9.dp).height(4.dp).clip(RoundedCornerShape(kikoCorner(4.dp))), color = statusColor(item.status), trackColor = c.surfaceLow)
+                }
+                Text(progressLabel(item), color = c.muted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+                item.nextEpisodeLabel(confirmed)?.let { label ->
+                    Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Schedule, null, tint = c.accent, modifier = Modifier.size(12.dp))
+                        Text(label, color = c.accent, fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.padding(start = 4.dp))
+                    }
                 }
             }
-            Column(Modifier.weight(1f).padding(start = 16.dp)) {
-                Text(topic.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = c.ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text(
-                    "by ${topic.author.name.ifBlank { "MyAnimeList" }} · ${formatForumDate(topic.createdAt)}",
-                    color = c.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 3.dp),
-                )
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Forum, null, tint = c.accent, modifier = Modifier.size(13.dp))
-                    Text(
-                        "${topic.postCount} replies",
-                        color = c.accent, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 5.dp),
-                    )
-                }
-            }
+            Icon(Icons.Default.ChevronRight, null, tint = c.muted, modifier = Modifier.padding(end = 14.dp).size(22.dp))
         }
     }
 }
@@ -467,6 +452,50 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
                 maxLines = 3, overflow = TextOverflow.Ellipsis,
                 style = LocalTextStyle.current.copy(shadow = Shadow(color = Color.Black.copy(alpha = .8f), offset = Offset(0f, 1f), blurRadius = 4f)),
             )
+        }
+    }
+}
+
+// Interest-Stacks-style card for a home featured article — cover banner on
+// top, then title/author below, with a views pill echoing the restack pill
+// on Interest Stacks cards (see StackStatsRow in StacksScreen.kt).
+@Composable fun HomeFeaturedArticleCard(article: FeaturedArticleEntry, onClick: () -> Unit) {
+    val c = LocalKikoColors.current
+    val interactionSource = remember { MutableInteractionSource() }
+    Card(
+        onClick = onClick,
+        interactionSource = interactionSource,
+        shape = RoundedCornerShape(kikoCorner(20.dp)),
+        colors = CardDefaults.cardColors(containerColor = c.surfaceContainer),
+        modifier = Modifier.width(210.dp).pressScale(interactionSource),
+    ) {
+        Column {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(120.dp)
+                    .clip(RoundedCornerShape(topStart = kikoCorner(20.dp), topEnd = kikoCorner(20.dp)))
+                    .background(c.surfaceContainerHigh),
+            ) {
+                if (article.image.isNotBlank()) {
+                    AsyncImage(model = article.image, contentDescription = article.title, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                } else {
+                    Text(article.title.take(1).uppercase(), fontWeight = FontWeight.Bold, fontSize = 26.sp, color = c.muted, modifier = Modifier.align(Alignment.Center))
+                }
+            }
+            Column(Modifier.padding(13.dp)) {
+                Text(article.title, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, lineHeight = 18.sp, color = c.ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (article.author.isNotBlank()) Text("by ${article.author}", color = c.muted, fontSize = 11.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 5.dp))
+                if (article.views.isNotBlank()) {
+                    Row(
+                        Modifier.padding(top = 8.dp).clip(kikoPillShape()).background(c.primaryContainer).padding(horizontal = 9.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Icons.Default.Visibility, null, tint = c.accent, modifier = Modifier.size(11.dp))
+                        Text(article.views, color = c.accent, fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.padding(start = 4.dp))
+                    }
+                }
+            }
         }
     }
 }
@@ -603,7 +632,7 @@ fun List<MediaItem>.sortedWithListSort(sort: ListSort, titleLanguage: TitleLangu
             hint = "Search your list",
             horizontalPadding = 0.dp,
             switchDescription = "Switch between Anime and Manga",
-        ) { Avatar(vm.malProfile?.picture.orEmpty(), vm.malProfile?.name.orEmpty()) { rect -> vm.profileDrawerOpen = true; vm.profileMenuAnchor = rect } }
+        ) { Avatar(vm.malProfile?.picture.orEmpty(), vm.malProfile?.name.orEmpty(), showUpdateBadge = vm.updateInfo != null) { rect -> vm.profileDrawerOpen = true; vm.profileMenuAnchor = rect } }
         if (vm.loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp), color = c.accent, trackColor = c.surfaceLow)
         Row(Modifier.fillMaxWidth().padding(vertical = 9.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             Text("${filtered.size} titles" + if (vm.loading) " · syncing…" else "", color = c.muted, fontSize = 13.sp)

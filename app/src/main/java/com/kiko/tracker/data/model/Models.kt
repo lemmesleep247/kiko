@@ -126,7 +126,37 @@ data class RelatedEntry(val relation: String, val title: String, val malId: Int 
 
 // One entry off a
 // MAL's own article page
-data class FeaturedArticleEntry(val url: String, val title: String, val image: String = "", val snippet: String = "", val author: String = "", val views: String = "")
+data class FeaturedArticleEntry(val url: String, val title: String, val image: String = "", val snippet: String = "", val author: String = "", val views: String = "", val tag: String = "")
+
+// One chip off myanimelist.net/featured/tag's category table (Interview,
+// Analysis, Cosplay, ...) — `slug` is the URL segment used to browse
+// /featured/tag/{slug}, `name` is the display label shown on the chip.
+data class FeaturedTag(val name: String, val slug: String)
+
+// Rendered piece of a Featured Article body (see MalDetailScrapeApi.parseFeaturedArticleBody) — plain-text
+// blocks only, same "scrape into a serializable shape" approach as ForumTopic/ForumPost, so the ui.screens
+// renderer (FeaturedArticleScreen) never needs Jsoup.
+sealed class ArticleBlock {
+    data class Heading(val text: String) : ArticleBlock()
+    data class Paragraph(val text: String) : ArticleBlock()
+    data class Image(val url: String) : ArticleBlock()
+    data class ListBlock(val items: List<String>, val ordered: Boolean = false) : ArticleBlock()
+    object Divider : ArticleBlock()
+}
+
+// `links` holds the article's own official/social links (Facebook, X,
+// Discord, Steam, official site, etc.) scraped out of its info list — same
+// (label, url) shape as CompanyDetail.links, so the reader can render them
+// with the exact same CompanyLinkChip row instead of a bespoke look.
+data class FeaturedArticleContent(
+    val title: String,
+    val author: String = "",
+    val date: String = "",
+    val views: String = "",
+    val tags: List<String> = emptyList(),
+    val blocks: List<ArticleBlock> = emptyList(),
+    val links: List<Pair<String, String>> = emptyList(),
+)
 // Characters/staff row entries
 
 // Japanese VA only —

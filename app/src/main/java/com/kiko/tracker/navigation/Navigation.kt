@@ -70,6 +70,8 @@ import com.kiko.tracker.ui.screens.DetailScreen
 import com.kiko.tracker.ui.screens.DetailScreenActions
 import com.kiko.tracker.ui.screens.DiscoverScreen
 import com.kiko.tracker.ui.screens.EditSheet
+import com.kiko.tracker.ui.screens.FeaturedArticleScreen
+import com.kiko.tracker.ui.screens.FeaturedArticlesScreen
 import com.kiko.tracker.ui.screens.FormatFilterScreen
 import com.kiko.tracker.ui.screens.ForumTopicScreen
 import com.kiko.tracker.ui.screens.GenreFilterScreen
@@ -80,6 +82,7 @@ import com.kiko.tracker.ui.screens.PersonDetailScreen
 import com.kiko.tracker.ui.screens.ProfileStatsScreen
 import com.kiko.tracker.ui.screens.RankingScreen
 import com.kiko.tracker.ui.screens.RecommendationsScreen
+import com.kiko.tracker.ui.screens.ReviewListSheet
 import com.kiko.tracker.ui.screens.ReviewScreen
 import com.kiko.tracker.ui.screens.ScheduleScreen
 import com.kiko.tracker.ui.screens.ScoreFilterScreen
@@ -196,6 +199,12 @@ sealed class TopScreen {
     // this gets pushed from.
     // (CompanyDetailScreen shows CompanyDetailScreenSkeleton while
     data class CompanyPage(val malId: Int, val company: CompanyDetail?) : TopScreen()
+    // Full "Featured Articles" browse grid, opened from Home's "View
+    // more" (see HomeScreen's featuredArticles section)
+    object FeaturedArticles : TopScreen()
+    // Single article reader, opened from the grid above or from
+    // Detail's own "Recent Featured Articles" row
+    data class FeaturedArticle(val url: String, val title: String) : TopScreen()
     data class Tab(val destination: Destination) : TopScreen()
 }
 // Same screen vs navigation
@@ -222,10 +231,12 @@ fun TopScreen.navKey(): Any = when (this) {
     is TopScreen.CharacterPage -> "characterPage:$malId"
     is TopScreen.PersonPage -> "personPage:$malId"
     is TopScreen.CompanyPage -> "companyPage:$malId"
+    TopScreen.FeaturedArticles -> "featuredArticles"
+    is TopScreen.FeaturedArticle -> "featuredArticle:$url"
     is TopScreen.Tab -> "tab:$destination"
 }
 
-fun TopScreen.isFullPage() = this is TopScreen.Detail || this is TopScreen.Ranking || this is TopScreen.Recommendations || this is TopScreen.Schedule || this is TopScreen.Topic || this is TopScreen.About || this is TopScreen.Review || this is TopScreen.StacksHome || this is TopScreen.StacksBrowse || this is TopScreen.StackDetail || this is TopScreen.MediaStacks || this is TopScreen.ClubDetail || this is TopScreen.ProfileStats || this is TopScreen.SettingsPage || this is TopScreen.ScoreFilter || this is TopScreen.YearFilter || this is TopScreen.FormatFilter || this is TopScreen.GenreFilter || this is TopScreen.CharacterPage || this is TopScreen.PersonPage || this is TopScreen.CompanyPage
+fun TopScreen.isFullPage() = this is TopScreen.Detail || this is TopScreen.Ranking || this is TopScreen.Recommendations || this is TopScreen.Schedule || this is TopScreen.Topic || this is TopScreen.About || this is TopScreen.Review || this is TopScreen.StacksHome || this is TopScreen.StacksBrowse || this is TopScreen.StackDetail || this is TopScreen.MediaStacks || this is TopScreen.ClubDetail || this is TopScreen.ProfileStats || this is TopScreen.SettingsPage || this is TopScreen.ScoreFilter || this is TopScreen.YearFilter || this is TopScreen.FormatFilter || this is TopScreen.GenreFilter || this is TopScreen.CharacterPage || this is TopScreen.PersonPage || this is TopScreen.CompanyPage || this is TopScreen.FeaturedArticles || this is TopScreen.FeaturedArticle
 
 
 @Composable fun KikoApp(vm: LibraryViewModel = viewModel(), onSignIn: () -> Unit = {}, onSignOut: () -> Unit = {}, malLink: Uri? = null, onMalLinkHandled: () -> Unit = {}) {
@@ -443,6 +454,13 @@ fun TopScreen.isFullPage() = this is TopScreen.Detail || this is TopScreen.Ranki
     // Home full-screen destinations
     var rankingOpen by remember { mutableStateOf(false) }
     var recommendationsOpen by remember { mutableStateOf(false) }
+    // Featured Articles browse grid + single-article reader. The
+    // reader is a separate nullable state (rather than nested inside
+    // the grid's own screen) so it can be reached both from the grid
+    // and from Detail's "Recent Featured Articles" row while the grid
+    // itself stays closed — same relationship as stacksBrowseKind/stackDetailOpen.
+    var featuredArticlesOpen by remember { mutableStateOf(false) }
+    var featuredArticleOpen by remember { mutableStateOf<Pair<String, String>?>(null) }
     // Schedule day to open
     var scheduleOpen by remember { mutableStateOf(false) }
     var scheduleInitialDay by remember { mutableStateOf(java.time.LocalDate.now().dayOfWeek) }
@@ -476,6 +494,13 @@ fun TopScreen.isFullPage() = this is TopScreen.Detail || this is TopScreen.Ranki
     // more" on Status distribution
     // somewhere you navigate/browse (same
     var scoreStatsOpen by remember { mutableStateOf<MediaItem?>(null) }
+    // "See more" on Detail's
+    // Reviews row — same
+    // sheet-over-current-screen shape as scoreStatsOpen
+    // above, re-running the same
+    // cached onLoadReviews rather than
+    // fetching separately.
+    var reviewListOpen by remember { mutableStateOf<MediaItem?>(null) }
     // Jump from a detail
     // Clears every other overlay
     // page can be reached
@@ -511,6 +536,7 @@ fun TopScreen.isFullPage() = this is TopScreen.Detail || this is TopScreen.Ranki
         clubDetailOpen = null
         mediaStacksOpen = null
         rankingOpen = false; recommendationsOpen = false; scheduleOpen = false
+        featuredArticlesOpen = false; featuredArticleOpen = null
         forumTopicOpen = null; aboutOpen = false; reviewOpen = null
         profileStatsOpen = false; settingsPageOpen = false; scoreFilterOpen = null; yearFilterOpen = null; formatFilterOpen = null
         genreFilterOpen = null
@@ -524,7 +550,7 @@ fun TopScreen.isFullPage() = this is TopScreen.Detail || this is TopScreen.Ranki
     // Prefer live item copy
     val detailItem = selectedItem?.let { sel -> vm.items.find { it.id == sel.id && it.type == sel.type } ?: sel }
     // Back press returns home
-    BackHandler(enabled = detailItem == null && characterDetailOpenId == null && personDetailOpenId == null && companyDetailOpenId == null && !rankingOpen && !recommendationsOpen && !scheduleOpen && forumTopicOpen == null && !aboutOpen && reviewOpen == null && !stacksHomeOpen && stacksBrowseKind == null && stackDetailOpen == null && mediaStacksOpen == null && clubDetailOpen == null && !profileStatsOpen && !settingsPageOpen && scoreFilterOpen == null && yearFilterOpen == null && formatFilterOpen == null && genreFilterOpen == null && (vm.destination != Destination.Home || discoverReturnItem != null)) {
+    BackHandler(enabled = detailItem == null && characterDetailOpenId == null && personDetailOpenId == null && companyDetailOpenId == null && !rankingOpen && !recommendationsOpen && !scheduleOpen && forumTopicOpen == null && !aboutOpen && reviewOpen == null && !stacksHomeOpen && stacksBrowseKind == null && stackDetailOpen == null && mediaStacksOpen == null && clubDetailOpen == null && !profileStatsOpen && !settingsPageOpen && scoreFilterOpen == null && yearFilterOpen == null && formatFilterOpen == null && genreFilterOpen == null && !featuredArticlesOpen && featuredArticleOpen == null && (vm.destination != Destination.Home || discoverReturnItem != null)) {
         val returnItem = discoverReturnItem
         if (returnItem != null && vm.destination == Destination.Discover) {
             discoverReturnItem = null
@@ -562,7 +588,7 @@ fun TopScreen.isFullPage() = this is TopScreen.Detail || this is TopScreen.Ranki
         ) {
             Scaffold(
                 containerColor = c.background,
-                bottomBar = { if (detailItem == null && characterDetailOpenId == null && personDetailOpenId == null && companyDetailOpenId == null && !rankingOpen && !recommendationsOpen && !scheduleOpen && forumTopicOpen == null && !aboutOpen && reviewOpen == null && !stacksHomeOpen && stacksBrowseKind == null && stackDetailOpen == null && mediaStacksOpen == null && clubDetailOpen == null && !profileStatsOpen && !settingsPageOpen && scoreFilterOpen == null && yearFilterOpen == null && formatFilterOpen == null && genreFilterOpen == null) BottomBar(vm.destination, onDoubleTapDiscover = { vm.openDiscoverSearch(context) }) { discoverReturnItem = null; discoverReturnDestination = null; discoverReturnStack = null; vm.destination = it } }
+                bottomBar = { if (detailItem == null && characterDetailOpenId == null && personDetailOpenId == null && companyDetailOpenId == null && !rankingOpen && !recommendationsOpen && !scheduleOpen && forumTopicOpen == null && !aboutOpen && reviewOpen == null && !stacksHomeOpen && stacksBrowseKind == null && stackDetailOpen == null && mediaStacksOpen == null && clubDetailOpen == null && !profileStatsOpen && !settingsPageOpen && scoreFilterOpen == null && yearFilterOpen == null && formatFilterOpen == null && genreFilterOpen == null && !featuredArticlesOpen && featuredArticleOpen == null) BottomBar(vm.destination, onDoubleTapDiscover = { vm.openDiscoverSearch(context) }) { discoverReturnItem = null; discoverReturnDestination = null; discoverReturnStack = null; vm.destination = it } }
             ) { padding ->
                 Box(Modifier.fillMaxSize().padding(padding)) {
                     val topScreen = when {
@@ -612,6 +638,12 @@ fun TopScreen.isFullPage() = this is TopScreen.Detail || this is TopScreen.Ranki
                         characterDetailOpenId != null -> TopScreen.CharacterPage(characterDetailOpenId!!, characterDetailOpen)
                         personDetailOpenId != null -> TopScreen.PersonPage(personDetailOpenId!!, personDetailOpen)
                         companyDetailOpenId != null -> TopScreen.CompanyPage(companyDetailOpenId!!, companyDetailOpen)
+                        // Checked ahead of featuredArticlesOpen so
+                        // the reader shows on top whether it was
+                        // opened from the grid or from Detail's
+                        // own "Recent Featured Articles" row
+                        featuredArticleOpen != null -> TopScreen.FeaturedArticle(featuredArticleOpen!!.first, featuredArticleOpen!!.second)
+                        featuredArticlesOpen -> TopScreen.FeaturedArticles
                         rankingOpen -> TopScreen.Ranking
                         recommendationsOpen -> TopScreen.Recommendations
                         scheduleOpen -> TopScreen.Schedule(scheduleInitialDay)
@@ -669,15 +701,16 @@ fun TopScreen.isFullPage() = this is TopScreen.Detail || this is TopScreen.Ranki
                                     onLoadFeaturedArticles = { forItem, onFound, onDone -> vm.loadDetailFeaturedArticles(context, forItem, onFound, onDone) },
                                     onLoadLinks = { forItem, onFound, onDone -> vm.loadDetailLinks(context, forItem, onFound, onDone) },
                                     onOpenTopic = { id, title -> forumTopicOpen = id to title },
-                                    onOpenFeaturedArticle = { url -> CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(url)) },
+                                    onOpenFeaturedArticle = { url, articleTitle -> featuredArticleOpen = url to articleTitle },
                                     onLoadCharacters = { forItem, onFound, onDone, onError -> vm.loadCharacters(forItem, onFound, onDone, onError) },
                                     onLoadReviews = { forItem, onFound, onDone -> vm.loadReviews(forItem, onFound, onDone) },
                                     onOpenReview = { rev -> reviewOpen = rev to screen.item.title },
-                                    onOpenReviewList = { url, _ -> CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(url)) },
+                                    onOpenReviewList = { reviewListOpen = it },
                                     onLeaveScroll = { index, offset -> vm.saveDetailScroll(screen.item.id, screen.item.type, index, offset) },
                                     onLeaveRelatedScroll = { index, offset -> vm.saveRelatedRowScroll(screen.item.id, screen.item.type, index, offset) },
                                     onLeaveRecommendedScroll = { index, offset -> vm.saveRecommendedRowScroll(screen.item.id, screen.item.type, index, offset) },
                                     onLeaveCharactersScroll = { index, offset -> vm.saveCharactersRowScroll(screen.item.id, screen.item.type, index, offset) },
+                                    onLeaveReviewsScroll = { index, offset -> vm.saveReviewsRowScroll(screen.item.id, screen.item.type, index, offset) },
                                     onGenreClick = { genre ->
                                         jumpToDiscover(screen.item, if (screen.item.type == MediaType.Manga) "Manga" else "Anime", DiscoverFilters(genres = setOf(genre)))
                                     },
@@ -695,6 +728,7 @@ fun TopScreen.isFullPage() = this is TopScreen.Detail || this is TopScreen.Ranki
                                 initialRelatedScroll = vm.getRelatedRowScroll(screen.item.id, screen.item.type),
                                 initialRecommendedScroll = vm.getRecommendedRowScroll(screen.item.id, screen.item.type),
                                 initialCharactersScroll = vm.getCharactersRowScroll(screen.item.id, screen.item.type),
+                                initialReviewsScroll = vm.getReviewsRowScroll(screen.item.id, screen.item.type),
                                 cachedSnapshot = vm.peekDetailCache(screen.item.id, screen.item.type),
                                 myListStatus = vm.items.mapNotNull { li -> li.id.toIntOrNull()?.let { (it to li.type) to li.status } }.toMap(),
                                 airingInfo = vm.getCachedAiring(screen.item.id),
@@ -747,6 +781,8 @@ fun TopScreen.isFullPage() = this is TopScreen.Detail || this is TopScreen.Ranki
                                 initialScroll = vm.getCompanyScroll(screen.malId),
                                 onLeaveScroll = { index, offset -> vm.saveCompanyScroll(screen.malId, index, offset) },
                             )
+                            TopScreen.FeaturedArticles -> FeaturedArticlesScreen(vm, onBack = { featuredArticlesOpen = false }, onOpenArticle = { url, articleTitle -> featuredArticleOpen = url to articleTitle })
+                            is TopScreen.FeaturedArticle -> FeaturedArticleScreen(url = screen.url, title = screen.title, onBack = { featuredArticleOpen = null })
                             TopScreen.Ranking -> RankingScreen(vm, onBack = { rankingOpen = false }, onOpenDetail = ::openDetail)
                             TopScreen.Recommendations -> RecommendationsScreen(vm, onBack = { recommendationsOpen = false }, onOpenDetail = ::openDetail, onEdit = { editor = it }, selectedItem = editor)
                             is TopScreen.Schedule -> ScheduleScreen(vm, initialDay = screen.initialDay, onBack = { scheduleOpen = false }, onOpenDetail = ::openDetail)
@@ -785,7 +821,7 @@ fun TopScreen.isFullPage() = this is TopScreen.Detail || this is TopScreen.Ranki
                                 onBack = { settingsPageOpen = false },
                             )
                             is TopScreen.Tab -> when (screen.destination) {
-                                Destination.Home -> HomeScreen(vm, onOpenDetail = ::openDetail, onList = { vm.destination = Destination.List }, onLocateInList = { item -> vm.locateInList(context, item); vm.destination = Destination.List }, onDiscover = { vm.destination = Destination.Discover }, onRanking = { rankingOpen = true }, onSeasonal = { vm.destination = Destination.Seasonal }, onSchedule = ::openSchedule, onOpenTopic = { id, title -> forumTopicOpen = id to title }, onSeeNews = { vm.destination = Destination.Community; vm.selectCommunityTab(context, CommunityTab.Forums); vm.openNewsBoard(context) }, onOpenStack = { id, title -> stackDetailOpen = id to title }, onOpenStacks = ::openStacks, onOpenAnnouncements = { vm.destination = Destination.Community; vm.selectCommunityTab(context, CommunityTab.Forums); vm.openAnnouncementsBoard(context) }, onSignIn = onSignIn, onEdit = { editor = it }, selectedItem = editor)
+                                Destination.Home -> HomeScreen(vm, onOpenDetail = ::openDetail, onList = { vm.destination = Destination.List }, onLocateInList = { item -> vm.locateInList(context, item); vm.destination = Destination.List }, onDiscover = { vm.destination = Destination.Discover }, onRanking = { rankingOpen = true }, onSeasonal = { vm.destination = Destination.Seasonal }, onSchedule = ::openSchedule, onOpenTopic = { id, title -> forumTopicOpen = id to title }, onSeeNews = { vm.destination = Destination.Community; vm.selectCommunityTab(context, CommunityTab.Forums); vm.openNewsBoard(context) }, onOpenStack = { id, title -> stackDetailOpen = id to title }, onOpenStacks = ::openStacks, onSignIn = onSignIn, onEdit = { editor = it }, selectedItem = editor, onSeeFeaturedArticles = { featuredArticlesOpen = true }, onOpenFeaturedArticle = { url, title -> featuredArticleOpen = url to title })
                                 Destination.List -> ListScreen(vm, onOpenDetail = ::openDetail, onIncrement = { vm.saveLive(context, it) }, onEdit = { editor = it }, selectedItem = editor)
                                 Destination.Discover -> DiscoverScreen(
                                     vm,
@@ -822,6 +858,29 @@ fun TopScreen.isFullPage() = this is TopScreen.Detail || this is TopScreen.Ranki
             // Keep sheets inside theme
             editorItem?.let { EditSheet(it, onDismiss = { editor = null }, onSave = { vm.saveLive(context, it); editor = null }, onDelete = { vm.deleteLive(context, it); editor = null; if (selectedItem?.id == it.id && selectedItem?.type == it.type) { vm.clearDetailCache(); selectedItem = null; detailStack = emptyList() } }) }
             scoreStatsOpen?.let { item -> ScoreStatsSheet(item = item, onDismiss = { scoreStatsOpen = null }, onLoad = { onFound, onDone -> vm.loadScoreStats(item, onFound, onDone) }) }
+            // Only render while no review is
+            // open on top of it (reviewOpen ==
+            // null) — reviewListOpen itself stays set the
+            // whole time a review is open, so this
+            // condition flips back to true and the sheet
+            // reappears once that review's onBack fires, instead
+            // of the sheet having been dismissed outright.
+            // initialReviews/initialScroll/onLeaveScroll (backed by the ViewModel, not
+            // Compose state) are what let it come back
+            // showing the same reviews at the same scroll
+            // position rather than a fresh "loading" sheet.
+            if (reviewListOpen != null && reviewOpen == null) {
+                val item = reviewListOpen!!
+                ReviewListSheet(
+                    item = item,
+                    onDismiss = { reviewListOpen = null },
+                    onLoad = { onFound, onDone -> vm.loadReviews(item, onFound, onDone) },
+                    onOpenReview = { rev -> reviewOpen = rev to item.title },
+                    initialReviews = vm.peekDetailCache(item.id, item.type)?.reviews.orEmpty(),
+                    initialScroll = vm.getReviewListScroll(item.id, item.type),
+                    onLeaveScroll = { index, offset -> vm.saveReviewListScroll(item.id, item.type, index, offset) },
+                )
+            }
             if (themeOpen) ThemeSheet(vm.themeMode, onDismiss = { themeOpen = false }, onSelect = { vm.setTheme(context, it); themeOpen = false })
             if (colorSourceOpen) ColorSourceSheet(vm.colorSource, vm.customColorHex, onDismiss = { colorSourceOpen = false }, onSelect = { vm.setColorSource(context, it) }, onCustomHexChange = { vm.setCustomColor(context, it) })
             if (paletteStyleOpen) PaletteStyleSheet(vm.paletteStyle, onDismiss = { paletteStyleOpen = false }, onSelect = { vm.setPaletteStyle(context, it); paletteStyleOpen = false })

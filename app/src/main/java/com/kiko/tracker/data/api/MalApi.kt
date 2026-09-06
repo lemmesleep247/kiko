@@ -278,10 +278,11 @@ class MalApi(private val context: Context) {
         (0 until arr.length()).mapNotNull { arr.getJSONObject(it).optJSONObject("node")?.safeTitle()?.takeIf { t -> t.isNotBlank() } }
     }
 
-    // Current season anime list
+    // Current season anime list — sorted by members (same default as the Seasonal tab)
+    // so "New this season" shows the same top titles in the same order.
     suspend fun seasonalAnime(limit: Int = 10): List<MediaItem> = withContext(Dispatchers.IO) {
         val (year, season) = currentSeason()
-        val body = authorized { get("$API/anime/season/$year/$season?limit=$limit&nsfw=true&fields=${browseFields("anime")}") }
+        val body = authorized { get("$API/anime/season/$year/$season?limit=$limit&sort=anime_num_list_users&nsfw=true&fields=${browseFields("anime")}") }
         val arr = JSONObject(body).optJSONArray("data") ?: return@withContext emptyList()
         (0 until arr.length()).map { parseEntry("anime", arr.getJSONObject(it)) }
     }
@@ -473,7 +474,8 @@ class MalApi(private val context: Context) {
         val endpoint = "$API/${if (item.type == MediaType.Anime) "anime" else "manga"}/${item.id}/my_list_status"
         val status = when (item.status) {
             WatchStatus.Watching -> "watching"; WatchStatus.Reading -> "reading"; WatchStatus.Completed -> "completed"
-            WatchStatus.OnHold -> "on_hold"; WatchStatus.Dropped -> "dropped"; WatchStatus.Plan -> "plan_to_watch"
+            WatchStatus.OnHold -> "on_hold"; WatchStatus.Dropped -> "dropped"
+            WatchStatus.Plan -> if (item.type == MediaType.Anime) "plan_to_watch" else "plan_to_read"
         }
         // Fix episode write key
         val progressField = if (item.type == MediaType.Anime) "num_watched_episodes" else "num_chapters_read"
@@ -484,8 +486,10 @@ class MalApi(private val context: Context) {
             put("status", status)
             put(progressField, item.progress.toString())
             put("score", item.myRating.toString())
-            if (item.watchStartDate.isNotBlank()) put("start_date", item.watchStartDate)
-            if (item.watchEndDate.isNotBlank()) put("finish_date", item.watchEndDate)
+            // Always send, even blank
+            // is how MAL clears
+            put("start_date", item.watchStartDate)
+            put("finish_date", item.watchEndDate)
             put(rewatchingField, item.isRewatching.toString())
             put(timesRewatchedField, item.timesRewatched.toString())
             // MAL accepts tags as

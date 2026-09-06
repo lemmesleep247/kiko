@@ -4,13 +4,18 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import org.jsoup.nodes.Node
 import org.jsoup.nodes.TextNode
 import java.io.IOException
+import com.kiko.tracker.data.model.ArticleBlock
 import com.kiko.tracker.data.model.CharacterEntry
 import com.kiko.tracker.data.model.CompanyNews
+import com.kiko.tracker.data.model.FeaturedArticleContent
 import com.kiko.tracker.data.model.FeaturedArticleEntry
+import com.kiko.tracker.data.model.FeaturedTag
 import com.kiko.tracker.data.model.MediaType
 import com.kiko.tracker.data.model.RelatedEntry
+import com.kiko.tracker.data.model.ReviewEntry
 import com.kiko.tracker.data.model.ScoreStats
 import com.kiko.tracker.data.model.VoiceActorEntry
 
@@ -198,6 +203,140 @@ class MalDetailScrapeApi {
         if (slugged != null && slugged.total > 0) return@withContext slugged
         runCatching { parseScoreStats(client.fetchMalDocument("$MAL/$kind/$id/stats")) }.getOrDefault(slugged ?: ScoreStats())
     }
+
+    // Reviews, scraped in place
+    // of the old Tenrai/Jikan
+    // proxy (which had started
+    // coming back empty). "spoiler=on"
+    // matches unchecking MAL's own
+    // "Spoiler" filter toggle, which
+    // otherwise hides spoiler reviews
+    // by default — same
+    // slug requirement as the
+    // other subpages above.
+    suspend fun fetchReviews(id: Int, type: MediaType, title: String): List<ReviewEntry> = withContext(Dispatchers.IO) {
+        val kind = if (type == MediaType.Anime) "anime" else "manga"
+        val slugged = runCatching { parseReviews(client.fetchMalDocument("$MAL/$kind/$id/${malSlug(title)}/reviews?spoiler=on")) }
+        if ((slugged.getOrNull()?.size ?: 0) > 0) return@withContext slugged.getOrThrow()
+        val fallback = runCatching { parseReviews(client.fetchMalDocument("$MAL/$kind/$id/reviews?spoiler=on")) }
+        fallback.getOrNull() ?: slugged.getOrDefault(emptyList())
+    }
+
+    // Verdict tags ("Recommended", "Mixed
+    // Feelings", "Not Recommended") and
+    // category tags ("Funny", "Well-written",
+    // etc) print as plain
+    // visible text on each
+    // ".tag" div, so text()
+    // already matches what the
+    // old Jikan "tags" array
+    // gave us. "Preliminary" carries
+    // an episode-count span inside
+    // the same div. "Spoiler"
+    // is pulled out into
+    // ReviewEntry.isSpoiler instead of staying
+    // a tag, matching the
+    // dedicated field the UI
+    // already reads.
+    private fun parseReviewTags(tagsDiv: Element?): Pair<List<String>, Boolean> {
+        val divs = tagsDiv?.select("div.tag").orEmpty()
+        val spoiler = divs.any { it.hasClass("spoiler") }
+        val tags = divs.filterNot { it.hasClass("spoiler") }.mapNotNull { it.text().trim().takeIf { t -> t.isNotBlank() } }
+        return tags to spoiler
+    }
+
+    // Rebuilds the review body
+    // from "div.text": MAL renders
+    // paragraph breaks as <br>
+    // rather than separate <p>
+    // tags, and tucks the
+    // rest of a long
+    // review inside a display:none
+    // "js-hidden" span (still real
+    // text to Jsoup, just
+    // hidden behind a "Read
+    // more" toggle in the
+    // browser) — so a
+    // plain .text() call would
+    // both flatten every paragraph
+    // onto one line and
+    // pull in the "..."
+    // ellipsis marker that sits
+    // between the visible and
+    // hidden portions. Walk the
+    // node tree instead: turn
+    // <br> into "\n", drop
+    // the ellipsis span, and
+    // collapse only the incidental
+    // whitespace from the source
+    // HTML's own indentation.
+    private fun textWithLineBreaks(el: Element): String {
+        val sb = StringBuilder()
+        fun walk(node: org.jsoup.nodes.Node) {
+            when (node) {
+                is TextNode -> sb.append(node.text())
+                is Element -> when {
+                    node.tagName() == "br" -> sb.append("\n")
+                    node.hasClass("js-visible") -> {}
+                    else -> node.childNodes().forEach(::walk)
+                }
+                else -> {}
+            }
+        }
+        el.childNodes().forEach(::walk)
+        return sb.toString()
+            .replace(Regex("[ \\t]+"), " ")
+            .replace(Regex(" *\\n *"), "\n")
+            .replace(Regex("\\n{3,}"), "\n\n")
+            .trim()
+    }
+
+    // mapIndexedNotNull rather than mapNotNull:
+    // the index feeds a
+    // fallback id when a
+    // review's permalink is missing
+    // or unparseable, so malId
+    // never silently collapses to
+    // the same value (0)
+    // across multiple reviews. LazyColumn/LazyRow
+    // use malId as key= for
+    // smooth scrolling — a
+    // duplicate key there breaks
+    // item identity across recomposition, which
+    // is the opposite of
+    // what key= is for.
+    // Real MAL ids are
+    // always positive, so a
+    // negative, index-derived fallback can
+    // never collide with a
+    // genuine one.
+    private fun parseReviews(doc: Document): List<ReviewEntry> =
+        doc.select("div.review-element").mapIndexedNotNull { index, el ->
+            val textDiv = el.selectFirst("div.text") ?: return@mapIndexedNotNull null
+            val text = textWithLineBreaks(textDiv)
+            if (text.isBlank()) return@mapIndexedNotNull null
+            val profileLink = el.selectFirst("div.thumb a")?.attr("href").orEmpty()
+            val username = el.selectFirst("div.username a")?.text()?.trim()?.takeIf { it.isNotBlank() }
+                ?: profileLink.trim('/').substringAfterLast("/").takeIf { it.isNotBlank() }
+                ?: "Anonymous"
+            val avatarImg = el.selectFirst("div.thumb img")
+            val userImage = avatarImg?.attr("data-src")?.takeIf { it.isNotBlank() } ?: avatarImg?.attr("src").orEmpty()
+            val score = el.selectFirst("div.rating span.num")?.text()?.trim()?.toIntOrNull() ?: 0
+            val (tags, spoiler) = parseReviewTags(el.selectFirst("div.tags"))
+            val url = el.selectFirst("div.open a")?.attr("href").orEmpty()
+            val reactionScore = Regex("\"num\":(\\d+)").find(el.attr("data-reactions"))?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            ReviewEntry(
+                malId = url.substringAfterLast("id=").toIntOrNull() ?: -(index + 1),
+                username = username,
+                userImage = userImage,
+                review = text,
+                score = score,
+                tags = tags,
+                reactionScore = reactionScore,
+                isSpoiler = spoiler,
+                url = url,
+            )
+        }
 
     // MAL's own slug convention:
     // collapsed to a single
@@ -459,7 +598,8 @@ class MalDetailScrapeApi {
             val snippet = unit.selectFirst("div.text")?.text()?.trim().orEmpty()
             val author = unit.selectFirst("p.info a")?.text()?.trim().orEmpty()
             val views = unit.selectFirst("div.information b")?.text()?.trim().orEmpty()
-            FeaturedArticleEntry(url = url, title = title, image = image, snippet = snippet, author = author, views = views)
+            val tag = unit.selectFirst("div.tags .tag")?.text()?.trim().orEmpty()
+            FeaturedArticleEntry(url = url, title = title, image = image, snippet = snippet, author = author, views = views, tag = tag)
         }
 
     // Home page's own "Featured
@@ -472,5 +612,234 @@ class MalDetailScrapeApi {
         val doc = client.fetchMalDocument(MAL)
         val container = doc.selectFirst("div.widget.featured div.news-list") ?: return@withContext emptyList()
         parseFeaturedArticleUnits(container.select("div.news-unit"), limit)
+    }
+
+    data class FeaturedArticlesPage(val articles: List<FeaturedArticleEntry>, val hasMore: Boolean)
+
+    // Shared by the three "browse a page of Featured Article news-units"
+    // entry points below (plain browse, tag filter, search) — same
+    // news-unit/pagination shape on all three (matches the site's own
+    // "1 - 20"/"21 - 40" pager labels), only the source URL differs.
+    private suspend fun fetchFeaturedArticlesFrom(url: String, page: Int): FeaturedArticlesPage = withContext(Dispatchers.IO) {
+        val doc = client.fetchMalDocument(url)
+        val units = doc.select("div.news-list div.news-unit")
+        val articles = parseFeaturedArticleUnits(units, units.size)
+        val maxPage = doc.select("div.pagination a.link").mapNotNull { a ->
+            Regex("[?&]p=(\\d+)").find(a.attr("href"))?.groupValues?.get(1)?.toIntOrNull()
+        }.maxOrNull() ?: page
+        FeaturedArticlesPage(articles, hasMore = page < maxPage)
+    }
+
+    // Full "myanimelist.net/featured?p=N" browse list — 20 news-unit
+    // entries per page. Deliberately skips the page-1-only "featured-pickup"
+    // editorial pinning strip so every page parses the exact same
+    // shape, rather than special-casing page 1 for four extra cards.
+    suspend fun fetchFeaturedArticlesPage(page: Int): FeaturedArticlesPage =
+        fetchFeaturedArticlesFrom("$MAL/featured?p=$page", page)
+
+    // "myanimelist.net/featured/tag/{slug}?p=N" — Featured Articles scoped
+    // to one tag chip off fetchFeaturedTags() below (e.g. "interview",
+    // "cosplay"). Backs the tag-filter chip row on the Featured Articles screen.
+    suspend fun fetchFeaturedArticlesByTag(tagSlug: String, page: Int): FeaturedArticlesPage =
+        fetchFeaturedArticlesFrom("$MAL/featured/tag/$tagSlug?p=$page", page)
+
+    // "myanimelist.net/featured/search?cat=featured&q=...&p=N" — full-text
+    // search over Featured Articles. Backs the search icon on the
+    // Featured Articles screen.
+    suspend fun fetchFeaturedArticlesSearch(query: String, page: Int): FeaturedArticlesPage =
+        fetchFeaturedArticlesFrom("$MAL/featured/search?cat=featured&q=${java.net.URLEncoder.encode(query, "UTF-8")}&p=$page", page)
+
+    // "myanimelist.net/featured/tag" — the full category table (Interview,
+    // Analysis, Cosplay, Studios, ...), each linking to its own
+    // /featured/tag/{slug} browse page. Fetched once and cached by the
+    // ViewModel (same shape as forum subboards) to fill the tag-filter chip row.
+    suspend fun fetchFeaturedTags(): List<FeaturedTag> = withContext(Dispatchers.IO) {
+        val doc = client.fetchMalDocument("$MAL/featured/tag")
+        doc.select("div.news-tags-table a.tag-name-link").mapNotNull { a ->
+            val name = a.selectFirst("span.tag-name")?.text()?.trim().orEmpty()
+            val slug = a.attr("href").substringAfterLast("/featured/tag/").substringBefore("?")
+            if (name.isBlank() || slug.isBlank()) null else FeaturedTag(name = name, slug = slug)
+        }
+    }
+
+    // Single "/featured/{id}/{slug}" article page — the actual reader,
+    // as opposed to parseFeaturedArticleUnits above which only ever
+    // scrapes list-row summaries. No official API for this (same
+    // situation as forum topics before MalApi.forumTopic existed),
+    // so the whole article body is flattened into plain ArticleBlocks
+    // here rather than carried as raw HTML into the ui.screens layer.
+    suspend fun fetchFeaturedArticle(url: String): FeaturedArticleContent = withContext(Dispatchers.IO) {
+        val doc = client.fetchMalDocument(url)
+        val container = doc.selectFirst("div.news-container") ?: throw IOException("Article not found")
+        val title = container.selectFirst("h1.title")?.text()?.trim().orEmpty()
+        val infoBlock = container.selectFirst("div.news-info-block div.information")
+        val author = infoBlock?.selectFirst("a")?.text()?.trim().orEmpty()
+        val views = infoBlock?.selectFirst("b")?.text()?.trim().orEmpty()
+        // Date sits as a bare text node between the byline's <br>
+        // and the "| N views" segment — no class to select on it.
+        val date = infoBlock?.html()?.substringAfter("<br>", "")?.substringBefore("|")
+            ?.let { org.jsoup.Jsoup.parse(it).text().trim() }.orEmpty()
+        val tags = container.select("div.tags .tag").map { it.text().trim() }.filter { it.isNotBlank() }
+        val bodyEl = container.selectFirst("div.featured-article-body")
+        val blocks = bodyEl?.let(::parseFeaturedArticleBody).orEmpty()
+        val links = bodyEl?.let(::parseFeaturedArticleLinks).orEmpty()
+        FeaturedArticleContent(title = title, author = author, date = date, views = views, tags = tags, blocks = blocks, links = links)
+    }
+
+    // Host suffix for MAL's own domain — links to MAL's own anime/people/forum
+    // pages already surface elsewhere (inline text, Related Database Entries),
+    // so they're excluded here rather than duplicated as "official link" chips.
+    private val malHostRegex = Regex("""(^|\.)myanimelist\.net$""", RegexOption.IGNORE_CASE)
+
+    // Pulls an advertorial article's own official/social links — the
+    // "Official Site: <a>...</a>", "Official Discord: <a>...</a>", "Official
+    // X: <a>...</a>", "Add to Wishlist: <a>...</a>" lines its Game
+    // Information list (or equivalent inline links) carries — into the same
+    // (label, url) shape CompanyDetail.links uses, deduped by URL, first
+    // occurrence wins. Anchors that only wrap an <img> are skipped: those are
+    // already surfaced as ArticleBlock.Image banners, not info links.
+    private fun parseFeaturedArticleLinks(body: Element): List<Pair<String, String>> {
+        val seen = LinkedHashMap<String, String>()
+        for (a in body.select("a[href]")) {
+            if (a.selectFirst("img") != null) continue
+            val href = a.attr("abs:href").ifBlank { a.attr("href") }
+            if (href.isBlank()) continue
+            val host = runCatching { java.net.URI(href).host?.lowercase() }.getOrNull().orEmpty()
+            if (host.isBlank() || malHostRegex.containsMatchIn(host)) continue
+            if (seen.containsKey(href)) continue
+            val ownText = a.text().trim()
+            val container = a.closest("li") ?: a.closest("p")
+            // Only the text *before* the anchor can be a "Label: " prefix —
+            // text after it (e.g. a <br/>-separated sentence sharing the
+            // same <p> as a bare "https://..." link, common in article
+            // bodies) is unrelated prose, not part of the link's label, and
+            // must never leak into the chip. Using container.text() minus
+            // a removeSuffix(ownText) used to grab that trailing prose
+            // whenever the anchor sat at the *start* of the paragraph
+            // instead of the end, since the string then doesn't end with
+            // ownText and removeSuffix is a no-op.
+            val prefix = container?.let { textBeforeNode(it, a) }?.trim()?.trimEnd(':', ' ').orEmpty()
+            seen[href] = prefix.ifBlank { friendlyLinkLabel(host, ownText) }
+        }
+        return seen.map { (url, label) -> label to url }
+    }
+
+    // Concatenates the text of `container`'s content that appears strictly
+    // before `target` in document order, stopping as soon as `target` is
+    // reached during the depth-first walk. Used instead of a naive
+    // container.text() (which includes everything, before AND after) so a
+    // link's own trailing sentence never gets mistaken for its label.
+    private fun textBeforeNode(container: Element, target: Element): String {
+        val sb = StringBuilder()
+        fun walk(node: Node): Boolean {
+            if (node === target) return true
+            if (node is TextNode) {
+                sb.append(node.text())
+            } else {
+                for (child in node.childNodes()) {
+                    if (walk(child)) return true
+                }
+            }
+            return false
+        }
+        for (child in container.childNodes()) {
+            if (walk(child)) break
+        }
+        return sb.toString()
+    }
+
+    // Fallback label for a link with no readable "Label: <a>" prefix (a bare
+    // "here"/button-style link, or the anchor's own text is just the URL) —
+    // a friendly service name when the host is recognizable, else the host.
+    // Generic CTA words ("here", "click here", "link") are never used as a
+    // label even as a last resort — the host name reads better than "Here".
+    private val genericLinkTextRegex = Regex("""^(click\s+)?here!?$|^this\s+link$|^link$""", RegexOption.IGNORE_CASE)
+
+    private fun friendlyLinkLabel(host: String, ownText: String): String = when {
+        "facebook" in host -> "Facebook"
+        "twitter" in host || host == "x.com" || host.endsWith(".x.com") || host == "t.co" -> "X"
+        "instagram" in host -> "Instagram"
+        "youtube" in host || host == "youtu.be" -> "YouTube"
+        "discord" in host -> "Discord"
+        "steampowered" in host -> "Steam"
+        "tiktok" in host -> "TikTok"
+        ownText.isNotBlank() && !ownText.startsWith("http", ignoreCase = true) && ownText.length <= 40 && !genericLinkTextRegex.matches(ownText) -> ownText
+        else -> host.removePrefix("www.")
+    }
+
+    // Flattens an element's inline content to plain text like Element.text()
+    // does, but first rewrites any `<a href>` anchor (other than an
+    // image-only one — those are pulled out as ArticleBlock.Image instead)
+    // into a "[label](href)" marker, since a plain Element.text() call keeps
+    // only the anchor's visible words and silently drops the href — fine
+    // when that text already happens to be the URL, but it loses the link
+    // entirely for anchors like "Here" or "Official Discord". linkify()
+    // (CommonComponents.kt) turns the marker back into a tappable span.
+    // Operates on a clone so the original body tree stays untouched for
+    // parseFeaturedArticleLinks (called right after this, on the same
+    // Element) to read anchors' real text/href from.
+    private fun textWithLinks(el: Element): String {
+        val clone = el.clone()
+        for (a in clone.select("a[href]")) {
+            if (a.selectFirst("img") != null) continue // image-only anchor, handled as ArticleBlock.Image
+            val href = a.attr("abs:href").ifBlank { a.attr("href") }
+            val label = a.text().trim()
+            if (href.isBlank() || label.isBlank()) continue
+            // A literal '[' / ']' in the label, or ')' in the href, would
+            // corrupt the "[label](href)" shape markdownLinkRegex expects —
+            // fall back to the bare href as its own label rather than risk
+            // a garbled marker (neither character is expected in practice).
+            val safeLabel = if ('[' in label || ']' in label) href else label
+            val safeHref = href.substringBefore(")")
+            a.text("[$safeLabel]($safeHref)")
+        }
+        return clone.text()
+    }
+
+    // Flattens an article body's top-level elements into ArticleBlocks.
+    // MAL articles wrap standalone images in their own <p> (or plain
+    // <a href="..."><img></a> banner links), so those are pulled out
+    // as ArticleBlock.Image rather than rendered as empty paragraphs.
+    private fun parseFeaturedArticleBody(body: Element): List<ArticleBlock> {
+        fun imageSrc(img: Element) = img.attr("abs:src").ifBlank { img.attr("abs:data-src") }
+        val blocks = mutableListOf<ArticleBlock>()
+        for (node in body.children()) {
+            when (node.tagName().lowercase()) {
+                "p" -> {
+                    // MAL often puts a banner <img> *and* trailing prose in
+                    // the same <p> (e.g. "<img/><br/>Some text..."), so image
+                    // and text are no longer mutually exclusive here — emit
+                    // an Image block for every <img> found, in document
+                    // order, then a Paragraph for any remaining text.
+                    // Previously this only emitted an Image when the <p>'s
+                    // text was *entirely* blank, so any <img> sharing a <p>
+                    // with real text was silently dropped.
+                    for (img in node.select("img")) {
+                        imageSrc(img).takeIf { it.isNotBlank() }?.let { blocks += ArticleBlock.Image(fullResMalImage(it)) }
+                    }
+                    textWithLinks(node).trim().takeIf { it.isNotBlank() }?.let { blocks += ArticleBlock.Paragraph(it) }
+                }
+                "h1", "h2", "h3", "h4", "h5", "h6" -> textWithLinks(node).trim().takeIf { it.isNotBlank() }?.let { blocks += ArticleBlock.Heading(it) }
+                "hr" -> if (blocks.lastOrNull() != ArticleBlock.Divider) blocks += ArticleBlock.Divider
+                "ul", "ol" -> {
+                    val items = node.children().filter { it.tagName().equals("li", ignoreCase = true) }.map { textWithLinks(it).trim() }.filter { it.isNotBlank() }
+                    if (items.isNotEmpty()) blocks += ArticleBlock.ListBlock(items, ordered = node.tagName().equals("ol", ignoreCase = true))
+                }
+                "img" -> imageSrc(node).takeIf { it.isNotBlank() }?.let { blocks += ArticleBlock.Image(fullResMalImage(it)) }
+                "a" -> {
+                    val img = node.selectFirst("img")
+                    if (img != null) {
+                        imageSrc(img).takeIf { it.isNotBlank() }?.let { blocks += ArticleBlock.Image(fullResMalImage(it)) }
+                    } else {
+                        textWithLinks(node).trim().takeIf { it.isNotBlank() }?.let { blocks += ArticleBlock.Paragraph(it) }
+                    }
+                }
+                "br", "iframe", "script", "style" -> {}
+                else -> textWithLinks(node).trim().takeIf { it.isNotBlank() }?.let { blocks += ArticleBlock.Paragraph(it) }
+            }
+        }
+        while (blocks.firstOrNull() == ArticleBlock.Divider) blocks.removeAt(0)
+        while (blocks.lastOrNull() == ArticleBlock.Divider) blocks.removeAt(blocks.lastIndex)
+        return blocks
     }
 }

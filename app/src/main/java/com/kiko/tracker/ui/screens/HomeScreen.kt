@@ -53,6 +53,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import coil.size.Size
+import androidx.compose.ui.graphics.FilterQuality
 import kotlinx.coroutines.launch
 import com.kiko.tracker.data.api.NewsSnapshot
 import com.kiko.tracker.data.model.DiscoverSort
@@ -110,6 +113,14 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
         items.filter { it.status == WatchStatus.Watching || it.status == WatchStatus.Reading }.maxByOrNull { it.updatedAt }
             ?: items.firstOrNull { it.status == WatchStatus.Watching || it.status == WatchStatus.Reading }
             ?: items.firstOrNull()
+    }
+    // "Last Updated List" — combined anime+manga activity feed, mirroring
+    // MAL's "My Last List Updates" home widget. Pure client-side sort/take
+    // over `items`, which Home already loads for every other section above
+    // (Continue, ranking chips, etc.) — no extra network call is made here,
+    // so this can't gate or slow down the page.
+    val lastUpdated = remember(items) {
+        items.filter { it.updatedAt.isNotBlank() }.sortedByDescending { it.updatedAt }.take(5)
     }
     val today = java.time.LocalDate.now().dayOfWeek
     // Airing-next row pool —
@@ -216,6 +227,31 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
                         } else if (vm.homeFeaturedArticlesLoading) {
                             SectionTitle("Featured Articles", "View more", onSeeFeaturedArticles)
                             HomeFeaturedArticleRowSkeleton()
+                        }
+                    }
+                    // Last 5 anime/manga list activities (add/status change/
+                    // progress bump), newest first — combined the same way
+                    // MAL's own widget combines both list types. Rendered
+                    // with the shared ListRow (same look as the List screen,
+                    // divider included) and no onIncrement, so the "+1"
+                    // button is omitted.
+                    key("lastUpdated") {
+                        if (lastUpdated.isNotEmpty()) {
+                            SectionTitle("Last Updated List", "See list", onList)
+                            Column {
+                                // item.id alone is just the numeric MAL id, and anime
+                                // and manga ids aren't in the same namespace — an anime
+                                // and a manga can share the same id. Since this section
+                                // (unlike single-type screens elsewhere) mixes both
+                                // types, key on type+id so every row key is guaranteed
+                                // unique and recomposition/scroll stays smooth.
+                                lastUpdated.forEachIndexed { index, item ->
+                                    key(item.type, item.id) {
+                                        ListRow(item, trackedOpenDetail, vm = vm)
+                                        if (index < lastUpdated.lastIndex) HorizontalDivider(modifier = Modifier.padding(start = 100.dp), thickness = 1.dp, color = c.outlineVariant)
+                                    }
+                                }
+                            }
                         }
                     }
                     if (vm.authChecked && !vm.signedIn && !vm.loading) {
@@ -461,6 +497,7 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
 // on Interest Stacks cards (see StackStatsRow in StacksScreen.kt).
 @Composable fun HomeFeaturedArticleCard(article: FeaturedArticleEntry, onClick: () -> Unit) {
     val c = LocalKikoColors.current
+    val context = LocalContext.current
     val interactionSource = remember { MutableInteractionSource() }
     Card(
         onClick = onClick,
@@ -478,7 +515,18 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
                     .background(c.surfaceContainerHigh),
             ) {
                 if (article.image.isNotBlank()) {
-                    AsyncImage(model = article.image, contentDescription = article.title, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                    AsyncImage(
+                        // Size.ORIGINAL + High filter quality — same
+                        // reasoning as FeaturedArticleGridCard's own
+                        // thumbnail: these news-unit images are small,
+                        // unproxied uploads, so avoid compounding that with
+                        // Coil's default downsampling/low-quality filtering.
+                        model = ImageRequest.Builder(context).data(article.image).size(Size.ORIGINAL).allowHardware(true).build(),
+                        contentDescription = article.title,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                        filterQuality = FilterQuality.High,
+                    )
                 } else {
                     Text(article.title.take(1).uppercase(), fontWeight = FontWeight.Bold, fontSize = 26.sp, color = c.muted, modifier = Modifier.align(Alignment.Center))
                 }

@@ -1615,6 +1615,26 @@ class LibraryViewModel : ViewModel() {
         }
     }
 
+    // Home's "MAL Announcement" card — replaces "Continue" in the same
+    // slot (see HomeScreen's showContinueCard). Same signed-in gate as
+    // newsSnapshots since it goes through the same official forum API.
+    var homeAnnouncement by mutableStateOf<ForumTopic?>(null); private set
+    var homeAnnouncementLoading by mutableStateOf(false); private set
+    private var homeAnnouncementLoaded = false
+    fun loadHomeAnnouncement(context: Context, force: Boolean = false) {
+        val api = MalApi(context)
+        if ((homeAnnouncementLoaded && !force) || !api.signedIn) return
+        homeAnnouncementLoaded = true
+        homeAnnouncementLoading = true
+        viewModelScope.launch {
+            runCatching { api.homeAnnouncement() }
+                .onSuccess { homeAnnouncement = it }
+                // Fail silently, no banner
+                .onFailure { homeAnnouncementLoaded = false }
+            homeAnnouncementLoading = false
+        }
+    }
+
     // Home "Featured Articles" row,
     // homepage widget (see MalDetailScrapeApi.fetchHomeFeaturedArticles),
     // same DetailFeaturedArticleCard DetailScreen's "Recent
@@ -1652,6 +1672,17 @@ class LibraryViewModel : ViewModel() {
     var featuredArticlesScrollIndex by mutableStateOf(0); private set
     var featuredArticlesScrollOffset by mutableStateOf(0); private set
     fun saveFeaturedArticlesScroll(index: Int, offset: Int) { featuredArticlesScrollIndex = index; featuredArticlesScrollOffset = offset }
+
+    // Per-article reading position (article url -> vertical scroll px) for
+    // the single-article reader (FeaturedArticleScreen). Unlike the grid's
+    // scroll above, this needs to be keyed per-url rather than a single
+    // index/offset pair, since any number of articles can be opened and
+    // left mid-read across a session (tap a link that opens the browser or
+    // an anime/manga Detail page on top, then come back — same idea as the
+    // grid's scroll-restore, just per-article instead of one global slot).
+    private val featuredArticleScrollPositions = mutableStateMapOf<String, Int>()
+    fun featuredArticleScrollFor(url: String): Int = featuredArticleScrollPositions[url] ?: 0
+    fun saveFeaturedArticleScroll(url: String, value: Int) { featuredArticleScrollPositions[url] = value }
 
     // Submitted text query — set by the search icon's expandable field.
     // Mutually exclusive with the tag filter below (submitting a search

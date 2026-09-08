@@ -68,6 +68,7 @@ import com.kiko.tracker.data.model.CommonThemes
 import com.kiko.tracker.data.model.CompanySummary
 import com.kiko.tracker.data.model.DiscoverFilters
 import com.kiko.tracker.data.model.DiscoverMode
+import com.kiko.tracker.data.model.ListViewMode
 import com.kiko.tracker.data.model.MediaItem
 import com.kiko.tracker.data.model.MediaType
 import com.kiko.tracker.data.model.PersonSummary
@@ -344,7 +345,24 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
     val c = LocalKikoColors.current
     var query by remember { mutableStateOf(vm.discoverQuery) }
     var filterSheetOpen by remember { mutableStateOf(false) }
+    // Genre section only pre-expands the first time the sheet is opened
+    // via requestDiscoverFilterSheet() below — reset once consumed so a
+    // later manual tap on the filter icon behaves normally (expanded only
+    // when a genre's already selected, same as before).
+    var forceExpandGenre by remember { mutableStateOf(false) }
+    LaunchedEffect(vm.discoverFilterSheetTick) {
+        if (vm.discoverFilterSheetTick > vm.discoverFilterSheetConsumedTick) {
+            filterSheetOpen = true
+            forceExpandGenre = true
+            vm.prewarmGenreLookup()
+            vm.consumeDiscoverFilterSheet()
+        }
+    }
     BackHandler(onBack = onExitResults)
+    // Grid only makes sense for Anime/Manga (the only types with poster-shaped
+    // covers) — Characters/People/Companies always render as rows regardless
+    // of the saved preference.
+    val isGrid = vm.discoverViewMode == ListViewMode.Grid && (vm.discoverTypeFilter == "Anime" || vm.discoverTypeFilter == "Manga")
     val staggerSeen = rememberStaggerMemory()
     // Restore results scroll position
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = vm.discoverScrollIndex, initialFirstVisibleItemScrollOffset = vm.discoverScrollOffset)
@@ -440,12 +458,15 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
                     }
                 }
                 // Fixes type/format mismatch
-                if (filterSheetOpen) AdvancedFilterSheet(vm.discoverFilters, type = vm.discoverTypeFilter, onDismiss = { filterSheetOpen = false }, onApply = { filterSheetOpen = false; vm.runDiscoverSearch(context, query, resolvedDiscoverType(it.format, vm.discoverTypeFilter), it) })
+                if (filterSheetOpen) AdvancedFilterSheet(vm.discoverFilters, type = vm.discoverTypeFilter, onDismiss = { filterSheetOpen = false; forceExpandGenre = false }, onApply = { filterSheetOpen = false; forceExpandGenre = false; vm.runDiscoverSearch(context, query, resolvedDiscoverType(it.format, vm.discoverTypeFilter), it) }, forceExpandGenre = forceExpandGenre)
 
                 Row(Modifier.fillMaxWidth().padding(top = 15.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                     DiscoverTypeDropdown(current = vm.discoverTypeFilter, onSelect = { picked -> vm.selectDiscoverType(context, picked, query) })
                     if (vm.discoverTypeFilter == "Anime" || vm.discoverTypeFilter == "Manga") {
-                        DiscoverSortMenu(current = vm.discoverSort, onSelect = { vm.selectDiscoverSort(context, it) }, modifier = Modifier.padding(start = 8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            ListViewModeToggle(vm.discoverViewMode) { vm.setDiscoverViewMode(context, it) }
+                            DiscoverSortMenu(current = vm.discoverSort, onSelect = { vm.selectDiscoverSort(context, it) })
+                        }
                     }
                 }
                 when (vm.discoverTypeFilter) {
@@ -538,7 +559,40 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
                     // ("Key ... was already
                     val resultsForList = vm.visibleDiscoverResults
                     if (vm.discoverSearching && resultsForList.isEmpty()) {
-                        item { ListRowSkeletonGroup(6) }
+                        if (isGrid) {
+                            repeat(3) { rowIndex ->
+                                item(key = "discover_skeleton_row_$rowIndex") {
+                                    Row(Modifier.fillMaxWidth().padding(bottom = 16.dp), horizontalArrangement = Arrangement.spacedBy(11.dp)) {
+                                        repeat(3) { Box(Modifier.weight(1f)) { ListGridCardSkeleton() } }
+                                    }
+                                }
+                            }
+                        } else {
+                            item { ListRowSkeletonGroup(6) }
+                        }
+                    } else if (isGrid) {
+                        // LazyColumn (not LazyVerticalGrid) throughout this screen so the
+                        // header/filters/type-branches above stay single-column — grid mode
+                        // just chunks results into 3-wide rows instead of switching containers.
+                        val rows = resultsForList.chunked(3)
+                        itemsIndexed(rows, key = { rowIndex, row -> "discover_row_${row.firstOrNull()?.let { "${it.id}_${it.type}" } ?: rowIndex}" }) { rowIndex, rowItems ->
+                            StaggeredItem(rowIndex, staggerSeen) {
+                                Row(Modifier.fillMaxWidth().padding(bottom = 16.dp), horizontalArrangement = Arrangement.spacedBy(11.dp)) {
+                                    rowItems.forEach { result ->
+                                        Box(Modifier.weight(1f)) {
+                                            RecommendationGridCard(
+                                                result, onOpenDetail = openResult,
+                                                myStatus = result.id.toIntOrNull()?.let { myListStatus[it to result.type] },
+                                                onLongPress = editResult,
+                                                isSelected = selectedItem?.id == result.id && selectedItem?.type == result.type,
+                                            )
+                                        }
+                                    }
+                                    // Keep the last, possibly-partial row's cards from stretching wide
+                                    repeat(3 - rowItems.size) { Box(Modifier.weight(1f)) }
+                                }
+                            }
+                        }
                     } else {
                         itemsIndexed(resultsForList, key = { _, it -> "${it.id}_${it.type}" }) { index, result ->
                             StaggeredItem(index, staggerSeen) {
@@ -586,9 +640,9 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
 }
 // Collapsible multi-select facet
 
-@Composable fun ExpandableFilterSection(title: String, options: List<String>, selected: Set<String>, onToggle: (String) -> Unit) {
+@Composable fun ExpandableFilterSection(title: String, options: List<String>, selected: Set<String>, onToggle: (String) -> Unit, initiallyExpanded: Boolean = selected.isNotEmpty()) {
     val c = LocalKikoColors.current
-    var expanded by remember(title) { mutableStateOf(selected.isNotEmpty()) }
+    var expanded by remember(title) { mutableStateOf(initiallyExpanded) }
     Column(Modifier.fillMaxWidth().padding(top = 18.dp).animateContentSize()) {
         Row(
             Modifier.fillMaxWidth().clip(RoundedCornerShape(kikoCorner(12.dp))).clickable { expanded = !expanded }.padding(vertical = 8.dp),
@@ -613,7 +667,7 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
 }
 // Discover advanced filters sheet
 
-@Composable fun AdvancedFilterSheet(current: DiscoverFilters, type: String, onDismiss: () -> Unit, onApply: (DiscoverFilters) -> Unit) {
+@Composable fun AdvancedFilterSheet(current: DiscoverFilters, type: String, onDismiss: () -> Unit, onApply: (DiscoverFilters) -> Unit, forceExpandGenre: Boolean = false) {
     val c = LocalKikoColors.current
     // Split combined genre facets
     var genres by remember { mutableStateOf(current.genres.filter { it !in CommonExplicitGenres }.toSet()) }
@@ -641,7 +695,7 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
             Text("Discover", color = c.primary, fontWeight = FontWeight.Bold, fontSize = 12.sp)
             Text("Advanced filters", style = MaterialTheme.typography.headlineSmall, color = c.ink, modifier = Modifier.padding(top = 5.dp, bottom = 4.dp))
 
-            ExpandableFilterSection("Genre", CommonGenres, genres, onToggle = { g -> genres = if (g in genres) genres - g else genres + g })
+            ExpandableFilterSection("Genre", CommonGenres, genres, onToggle = { g -> genres = if (g in genres) genres - g else genres + g }, initiallyExpanded = genres.isNotEmpty() || forceExpandGenre)
             // Separate explicit genre section
             ExpandableFilterSection("Explicit genre", CommonExplicitGenres, explicitGenres, onToggle = { g -> explicitGenres = if (g in explicitGenres) explicitGenres - g else explicitGenres + g })
             // Separate themes section

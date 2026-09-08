@@ -28,6 +28,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -48,6 +49,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -79,7 +83,6 @@ import com.kiko.tracker.ui.components.Cover
 import com.kiko.tracker.ui.components.ExpandableSearchHeader
 import com.kiko.tracker.ui.components.statusColor
 import com.kiko.tracker.ui.theme.AiringNextRowSkeleton
-import com.kiko.tracker.ui.theme.ContinueCardSkeleton
 import com.kiko.tracker.ui.theme.HomeFeaturedArticleRowSkeleton
 import com.kiko.tracker.ui.theme.ListGridCardSkeleton
 import com.kiko.tracker.ui.theme.ListRowSkeletonGroup
@@ -95,32 +98,30 @@ import com.kiko.tracker.ui.theme.pressScale
 import com.kiko.tracker.ui.theme.rememberStaggerMemory
 import com.kiko.tracker.viewmodel.LibraryViewModel
 
-@Composable fun HomeScreen(vm: LibraryViewModel, onOpenDetail: (MediaItem) -> Unit, onList: () -> Unit, onLocateInList: (MediaItem) -> Unit, onDiscover: () -> Unit, onRanking: () -> Unit, onSeasonal: () -> Unit, onSchedule: (java.time.DayOfWeek) -> Unit, onOpenTopic: (Int, String) -> Unit, onSeeNews: () -> Unit, onOpenStack: (Int, String) -> Unit, onOpenStacks: () -> Unit, onSignIn: () -> Unit, onEdit: (MediaItem) -> Unit = {}, selectedItem: MediaItem? = null, onSeeFeaturedArticles: () -> Unit = {}, onOpenFeaturedArticle: (String, String) -> Unit = { _, _ -> }) {
+@Composable fun HomeScreen(vm: LibraryViewModel, onOpenDetail: (MediaItem) -> Unit, onList: () -> Unit, onDiscover: () -> Unit, onRanking: () -> Unit, onSeasonal: () -> Unit, onSchedule: (java.time.DayOfWeek) -> Unit, onOpenTopic: (Int, String) -> Unit, onSeeNews: () -> Unit, onOpenStack: (Int, String) -> Unit, onOpenStacks: () -> Unit, onSignIn: () -> Unit, onSeeFeaturedArticles: () -> Unit = {}, onOpenFeaturedArticle: (String, String) -> Unit = { _, _ -> }, onOpenGenre: (String) -> Unit = {}) {
     val c = LocalKikoColors.current
     val context = LocalContext.current
     LaunchedEffect(vm.signedIn) { vm.loadNewsSnapshots(context) }
     LaunchedEffect(Unit) { vm.loadHomeFeaturedArticles() }
-    // Testing swap: hide (not
-    // MAL announcement card in
-    val showContinueCard = true
     // Was recomputing (filter +
     // including ones triggered by
     // background sync — instead
     // change. Same remember(...) pattern
     val items = remember(vm.items, vm.nsfwEnabled) { vm.visibleItems }
-    val active = remember(items) {
-        // Most recently updated wins
-        items.filter { it.status == WatchStatus.Watching || it.status == WatchStatus.Reading }.maxByOrNull { it.updatedAt }
-            ?: items.firstOrNull { it.status == WatchStatus.Watching || it.status == WatchStatus.Reading }
-            ?: items.firstOrNull()
-    }
     // "Last Updated List" — combined anime+manga activity feed, mirroring
     // MAL's "My Last List Updates" home widget. Pure client-side sort/take
     // over `items`, which Home already loads for every other section above
-    // (Continue, ranking chips, etc.) — no extra network call is made here,
-    // so this can't gate or slow down the page.
+    // (ranking chips, etc.) — no extra network call is made here, so this
+    // can't gate or slow down the page.
     val lastUpdated = remember(items) {
         items.filter { it.updatedAt.isNotBlank() }.sortedByDescending { it.updatedAt }.take(5)
+    }
+    // Top 5 genres across the whole list, by how many items carry each
+    // genre tag — same `items` source as everything else above, so this
+    // is a pure client-side tally with no extra network call.
+    val topGenres = remember(items) {
+        items.asSequence().flatMap { it.genres.asSequence() }.filter { it.isNotBlank() }
+            .groupingBy { it }.eachCount().entries.sortedByDescending { it.value }.take(5).map { it.key }
     }
     val today = java.time.LocalDate.now().dayOfWeek
     // Airing-next row pool —
@@ -182,18 +183,6 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
                             AiringNextRowSkeleton()
                         }
                     }
-                    // Most recently updated in-progress
-                    // (see top of function)
-                    // place. Nothing here was
-                    if (showContinueCard) {
-                        if (active != null) {
-                            SectionTitle("Continue", "See list", onList)
-                            ContinueCard(active, vm, onClick = { onLocateInList(active) }, onLongPress = onEdit, isSelected = selectedItem?.id == active.id && selectedItem?.type == active.type)
-                        } else if (vm.loading) {
-                            SectionTitle("Continue", "See list", onList)
-                            ContinueCardSkeleton()
-                        }
-                    }
                     // Home recent news row
                     key("snapshots") {
                         if (vm.newsSnapshots.isNotEmpty()) {
@@ -250,6 +239,20 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
                                         ListRow(item, trackedOpenDetail, vm = vm)
                                         if (index < lastUpdated.lastIndex) HorizontalDivider(modifier = Modifier.padding(start = 100.dp), thickness = 1.dp, color = c.outlineVariant)
                                     }
+                                }
+                            }
+                        }
+                    }
+                    // Top 5 genres by item count, rank-badged spotlight-style
+                    // cards (same cover-banner-on-top language as
+                    // StackSpotlightCard) in a horizontal row. Tapping a card
+                    // jumps to Discover pre-filtered by that genre.
+                    key("topGenres") {
+                        if (topGenres.isNotEmpty()) {
+                            SectionTitle("Top Genres", "Discover", onDiscover)
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                itemsIndexed(topGenres, key = { _, genre -> genre }) { index, genre ->
+                                    GenreCard(index + 1, genre, vm) { onOpenGenre(genre) }
                                 }
                             }
                         }
@@ -339,6 +342,91 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
         }
     }
 }
+// Rank-badged genre card for the Home "Top Genres" row — same
+// cover-banner-over-text language as StackSpotlightCard (StacksScreen.kt):
+// a top image banner, then title below. The banner shows the top MAL
+// search result for that genre (fetched/cached via
+// vm.loadGenreTopItem/getCachedGenreTopItem), falling back to a plain
+// genre icon tile while it loads or if nothing came back. Rank badge sits
+// over the banner, top-end.
+@Composable fun GenreCard(rank: Int, genre: String, vm: LibraryViewModel, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val c = LocalKikoColors.current
+    val context = LocalContext.current
+    LaunchedEffect(genre) { vm.loadGenreTopItem(context, genre) }
+    val topItem = vm.getCachedGenreTopItem(genre)
+    Column(
+        modifier
+            .width(130.dp)
+            .clip(RoundedCornerShape(kikoCorner(18.dp)))
+            .background(c.surfaceContainer)
+            .kikoClickable(onClick = onClick),
+    ) {
+        Box(Modifier.fillMaxWidth().height(96.dp)) {
+            if (topItem?.cover?.isNotBlank() == true) {
+                AsyncImage(model = topItem.cover, contentDescription = null, modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(topStart = kikoCorner(18.dp), topEnd = kikoCorner(18.dp))), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+            } else {
+                Box(Modifier.fillMaxSize().background(c.primaryContainer), contentAlignment = Alignment.Center) {
+                    Icon(genreIcon(genre), null, tint = c.onPrimaryContainer, modifier = Modifier.size(26.dp))
+                }
+            }
+            Box(
+                Modifier
+                    .padding(8.dp)
+                    .align(Alignment.TopEnd)
+                    .size(20.dp)
+                    .clip(CircleShape)
+                    .background(if (rank == 1) c.primaryContainer else c.surfaceLow),
+                contentAlignment = Alignment.Center,
+            ) {
+                // Plain Text() here left the digit visibly off-center inside
+                // the circle — default font padding pads its layout box
+                // asymmetrically (extra space below the glyph for
+                // descenders), which throws off Box's center alignment even
+                // though the Box itself is centering correctly. Trimming
+                // that padding and pinning lineHeight to fontSize (both
+                // below) is the standard fix for a single glyph in a small
+                // badge like this.
+                Text(
+                    rank.toString(),
+                    color = if (rank == 1) c.onPrimaryContainer else c.muted,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 10.sp,
+                    textAlign = TextAlign.Center,
+                    style = TextStyle(
+                        lineHeight = 10.sp,
+                        lineHeightStyle = LineHeightStyle(alignment = LineHeightStyle.Alignment.Center, trim = LineHeightStyle.Trim.Both),
+                        platformStyle = PlatformTextStyle(includeFontPadding = false),
+                    ),
+                )
+            }
+        }
+        // Icon sits left-aligned above the genre name, below the banner —
+        // no need to center it against anything else on this line.
+        Icon(genreIcon(genre), null, tint = c.muted, modifier = Modifier.padding(start = 12.dp, top = 10.dp).size(18.dp))
+        Text(genre, color = c.ink, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 12.dp))
+    }
+}
+
+// Best-effort icon per genre name, purely decorative — falls back to a
+// generic tag icon for anything not in the map.
+private fun genreIcon(genre: String): ImageVector = when (genre.lowercase()) {
+    "action" -> Icons.Default.Bolt
+    "adventure" -> Icons.Default.Explore
+    "comedy" -> Icons.Default.EmojiEmotions
+    "drama" -> Icons.Default.TheaterComedy
+    "fantasy", "supernatural" -> Icons.Default.AutoAwesome
+    "romance" -> Icons.Default.Favorite
+    "sci-fi" -> Icons.Default.Public
+    "horror" -> Icons.Default.DarkMode
+    "mystery", "psychological" -> Icons.Default.Psychology
+    "slice of life" -> Icons.Default.Groups
+    "sports" -> Icons.Default.SportsSoccer
+    "thriller" -> Icons.Default.Whatshot
+    "mecha" -> Icons.Default.Build
+    "music" -> Icons.Default.MusicNote
+    else -> Icons.Default.Category
+}
+
 // Reusable rounded pill button
 
 @Composable fun HomeActionButton(modifier: Modifier = Modifier, label: String, icon: ImageVector, onClick: () -> Unit) {
@@ -382,65 +470,6 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
     }
 }
 
-// Home's "Continue" entry, now
-// the app (see StackFeaturedCard)
-// instead of sitting as
-// only the surrounding container
-// List rather than opening
-// into the list, not
-
-// Same card shell as AiringNextCard (rounded surfaceContainer box, cover
-// flush against the left/top/bottom edges) — inlined here instead of
-// nesting ListRow, since ListRow's own padding would inset the cover
-// again and ListRow is shared by screens that aren't card-shaped.
-@Composable fun ContinueCard(item: MediaItem, vm: LibraryViewModel, onClick: (MediaItem) -> Unit, onLongPress: ((MediaItem) -> Unit)? = null, isSelected: Boolean = false, modifier: Modifier = Modifier) {
-    val c = LocalKikoColors.current
-    val haptic = LocalHapticFeedback.current
-    LaunchedEffect(item.id) { vm.loadAiringEpisode(item) }
-    val confirmed = vm.getCachedAiring(item.id)
-    Box(
-        modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(kikoCorner(22.dp)))
-            .background(if (isSelected) c.primaryContainer else c.surfaceContainer)
-            .kikoCombinedClickable(
-                onClick = { onClick(item) },
-                onLongClick = onLongPress?.let { edit -> { haptic.performHapticFeedback(HapticFeedbackType.LongPress); edit(item) } },
-            ),
-    ) {
-        Row(
-            // Fixed height matching the old ListRow-based card (92dp-wide cover +
-            // 14dp top/bottom padding = 156dp), so this card's overall size doesn't
-            // change — only the cover grows to fill it edge-to-edge.
-            Modifier.fillMaxWidth().height(156.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Cover(item, Modifier.fillMaxHeight().aspectRatio(92f / 128f), selected = isSelected)
-            Column(Modifier.weight(1f).padding(start = 16.dp, end = 6.dp, top = 14.dp, bottom = 14.dp)) {
-                Text(item.displayTitle(), fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = c.ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Row(Modifier.padding(top = 3.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(item.genre, color = c.muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                    if (item.myRating > 0) {
-                        Text("  ·  ", color = c.muted, fontSize = 13.sp)
-                        Icon(Icons.Default.Star, null, tint = Color(0xFFFFC107), modifier = Modifier.size(12.dp))
-                        Text(item.myRating.toString(), color = c.ink, fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.padding(start = 3.dp))
-                    }
-                }
-                if (item.total > 0) {
-                    LinearProgressIndicator(progress = { item.progress.toFloat() / item.total }, modifier = Modifier.fillMaxWidth(0.75f).padding(top = 9.dp).height(4.dp).clip(RoundedCornerShape(kikoCorner(4.dp))), color = statusColor(item.status), trackColor = c.surfaceLow)
-                }
-                Text(progressLabel(item), color = c.muted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
-                item.nextEpisodeLabel(confirmed)?.let { label ->
-                    Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Schedule, null, tint = c.accent, modifier = Modifier.size(12.dp))
-                        Text(label, color = c.accent, fontWeight = FontWeight.Bold, fontSize = 11.sp, modifier = Modifier.padding(start = 4.dp))
-                    }
-                }
-            }
-            Icon(Icons.Default.ChevronRight, null, tint = c.muted, modifier = Modifier.padding(end = 14.dp).size(22.dp))
-        }
-    }
-}
 // Pinterest-style snapshots layout
 
 @Composable fun SnapshotsGrid(snapshots: List<NewsSnapshot>, onOpenTopic: (Int, String) -> Unit) {
@@ -639,7 +668,7 @@ fun List<MediaItem>.sortedWithListSort(sort: ListSort, titleLanguage: TitleLangu
     // remember(...) pattern ScoreFilterScreen/YearFilterScreen already
     val filtered = remember(vm.items, vm.nsfwEnabled, typeTab, effectiveFilter, submittedQuery, vm.listSort, vm.titleLanguage) {
         vm.visibleItems
-            .filter { it.type == typeTab && (effectiveFilter == "All" || it.status.displayLabel(typeTab) == effectiveFilter) && it.title.contains(submittedQuery, true) }
+            .filter { it.type == typeTab && (effectiveFilter == "All" || it.status.displayLabel(typeTab) == effectiveFilter) && (it.title.contains(submittedQuery, true) || it.titleEnglish.contains(submittedQuery, true)) }
             .sortedWithListSort(vm.listSort, vm.titleLanguage)
     }
     // Status filter now lives

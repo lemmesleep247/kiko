@@ -31,15 +31,24 @@ import com.kiko.tracker.data.api.ForumBoard
 import com.kiko.tracker.data.api.ForumCategory
 import com.kiko.tracker.data.api.ForumSubboard
 import com.kiko.tracker.data.api.ForumTopic
+import com.kiko.tracker.data.api.MalAboutMe
 import com.kiko.tracker.data.api.MalApi
 import com.kiko.tracker.data.api.MalCharacterApi
 import com.kiko.tracker.data.api.MalClub
 import com.kiko.tracker.data.api.MalCompanyApi
 import com.kiko.tracker.data.api.MalDetailScrapeApi
+import com.kiko.tracker.data.api.MalFavoriteEntry
+import com.kiko.tracker.data.api.MalFavorites
+import com.kiko.tracker.data.api.MalFriend
+import com.kiko.tracker.data.api.MalFriendProfile
 import com.kiko.tracker.data.api.MalGenreApi
 import com.kiko.tracker.data.api.MalGenreLookup
 import com.kiko.tracker.data.api.MalPeopleApi
 import com.kiko.tracker.data.api.MalProfile
+import com.kiko.tracker.data.api.MalProfileScrapeApi
+import com.kiko.tracker.data.api.MalSessionCookie
+import com.kiko.tracker.data.api.MalSessionExpired
+import com.kiko.tracker.data.api.MalUserApi
 import com.kiko.tracker.data.api.NewsSnapshot
 import com.kiko.tracker.data.api.RecommendedEntry
 import com.kiko.tracker.data.api.StackBrowseKind
@@ -79,6 +88,8 @@ import com.kiko.tracker.data.model.SeasonalSort
 import com.kiko.tracker.data.model.StatusDistribution
 import com.kiko.tracker.data.model.ThemeMode
 import com.kiko.tracker.data.model.TitleLanguage
+import com.kiko.tracker.data.model.UserSearchFilters
+import com.kiko.tracker.data.model.UserSummary
 import com.kiko.tracker.data.model.WatchStatus
 import com.kiko.tracker.data.model.currentSeasonName
 import com.kiko.tracker.data.model.malStatusCode
@@ -87,6 +98,7 @@ import com.kiko.tracker.data.model.matches
 import com.kiko.tracker.data.model.nowIso
 import com.kiko.tracker.data.model.nsfwFiltered
 import com.kiko.tracker.data.model.sortedForDiscover
+import com.kiko.tracker.ui.screens.malIdFromFavoriteUrl
 import com.kiko.tracker.ui.screens.normalizeFilterForType
 import com.kiko.tracker.ui.screens.sortedWithListSort
 import com.kiko.tracker.ui.theme.parseHexColor
@@ -513,6 +525,179 @@ class LibraryViewModel : ViewModel() {
     // Only resets to Anime
     var profileStatsTab by mutableStateOf(MediaType.Anime); private set
     fun selectProfileStatsTab(type: MediaType) { profileStatsTab = type }
+    // Profile's Friends row and per-category Favorites rows are horizontal
+    // LazyRows that get torn down (along with the rest of Profile) whenever
+    // a favorite is opened in-app and rebuilt on the way back — persisted
+    // here so each row lands back where the user left it, same idea as
+    // profileScrollOffset above for the page's own vertical scroll.
+    var profileFriendsRowScroll: Pair<Int, Int> = 0 to 0; private set
+    fun saveProfileFriendsRowScroll(index: Int, offset: Int) { profileFriendsRowScroll = index to offset }
+    private val profileFavoritesRowScroll = mutableMapOf<String, Pair<Int, Int>>()
+    fun getProfileFavoritesRowScroll(category: String) = profileFavoritesRowScroll[category] ?: (0 to 0)
+    fun saveProfileFavoritesRowScroll(category: String, index: Int, offset: Int) { profileFavoritesRowScroll[category] = index to offset }
+    // Loading state for a favorite anime/manga tapped from Profile's
+    // Favorites rows — fetched by id/type the same way any other title is.
+    var profileFavoriteLoadingId by mutableStateOf<Int?>(null); private set
+    fun openMalTitleDetail(context: Context, malId: Int, type: MediaType, onLoaded: (MediaItem) -> Unit) {
+        profileFavoriteLoadingId = malId
+        viewModelScope.launch {
+            runCatching { MalApi(context).detail(malId, type) }
+                .onSuccess { onLoaded(it) }
+                .onFailure { error = it.message ?: "Could not load title" }
+            profileFavoriteLoadingId = null
+        }
+    }
+    // Friends/favorites aren't in MAL's official API — scraped off the
+    // profile page, which needs its own logged-in cookie session (see
+    // MalSessionCookie/MalLoginWebView). Cached here (not just remembered
+    // inside the composable) so navigating to a favorite's detail page and
+    // back doesn't re-scrape the profile page every time — this cache lives
+    // for as long as the app process does. null means "not loaded yet";
+    // an empty list/MalFavorites means "loaded, has none". Cleared and
+    // re-fetched only on an explicit Profile pull-to-refresh (or sign-out).
+    var profileFriends by mutableStateOf<List<MalFriend>?>(null); private set
+    var profileFavorites by mutableStateOf<MalFavorites?>(null); private set
+    // MAL's "About Me" widget — scraped in the same round-trip as
+    // friends/favorites below (same cookie session, same profile-page
+    // document), so it shares that pair's loading flag rather than having
+    // its own. Null until that scrape has run once; MalAboutMe.isEmpty
+    // once it has, if the signed-in user hasn't set one up on MAL at all.
+    var profileAboutMe by mutableStateOf<MalAboutMe?>(null); private set
+    var profileFriendsFavoritesLoading by mutableStateOf(false); private set
+    private var profileFriendsFavoritesUsername: String? = null
+    fun loadProfileFriendsFavorites(context: Context, username: String, force: Boolean = false) {
+        if (username.isBlank() || profileFriendsFavoritesLoading) return
+        if (!MalSessionCookie(context).has()) return
+        if (!force && profileFriendsFavoritesUsername == username && profileFavorites != null) return
+        profileFriendsFavoritesUsername = username
+        profileFriendsFavoritesLoading = true
+        viewModelScope.launch {
+            val api = MalProfileScrapeApi(context)
+            runCatching {
+                val f = api.friends(username)
+                val fav = resolveFavoritesEnglishTitles(context, api.favorites(username))
+                val about = api.aboutMe(username)
+                profileFriends = f
+                profileFavorites = fav
+                profileAboutMe = about
+            }.onFailure { e -> if (e is MalSessionExpired) MalSessionCookie(context).clear() }
+            profileFriendsFavoritesLoading = false
+        }
+    }
+    // Favorites are scraped straight off MAL's profile page, which only
+    // gives us whatever title MAL's own site renders there (usually
+    // romaji) — unlike the official API, there's no separate English field
+    // to fall back to. So when Kiko's Title Language is set to English,
+    // look each anime/manga favorite's id up (parsed from its url, same as
+    // the tap handler in FavoritesCategoryRow) through the same id-keyed,
+    // cached englishTitles() lookup resolveEnglishTitles() above uses for
+    // lists/rankings, and swap in the English title wherever MAL has one.
+    // Characters/people/companies don't carry a title to translate, so
+    // those sections are left as-is.
+    private suspend fun resolveFavoritesEnglishTitles(context: Context, favorites: MalFavorites): MalFavorites {
+        if (titleLanguage != TitleLanguage.English) return favorites
+        suspend fun resolve(kind: String, entries: List<MalFavoriteEntry>): List<MalFavoriteEntry> {
+            if (entries.isEmpty()) return entries
+            val idByEntry = entries.associateWith { malIdFromFavoriteUrl(it.url) }
+            val ids = idByEntry.values.filterNotNull()
+            if (ids.isEmpty()) return entries
+            val englishTitles = runCatching { MalApi(context).englishTitles(kind, ids) }.getOrDefault(emptyMap())
+            return entries.map { entry ->
+                val english = idByEntry[entry]?.let { englishTitles[it] }
+                if (!english.isNullOrBlank()) entry.copy(title = english) else entry
+            }
+        }
+        val (anime, manga) = coroutineScope {
+            val animeDeferred = async { resolve("anime", favorites.anime) }
+            val mangaDeferred = async { resolve("manga", favorites.manga) }
+            animeDeferred.await() to mangaDeferred.await()
+        }
+        return favorites.copy(anime = anime, manga = manga)
+    }
+    fun refreshProfileFriendsFavorites(context: Context, username: String) {
+        profileFriends = null
+        profileFavorites = null
+        profileAboutMe = null
+        loadProfileFriendsFavorites(context, username, force = true)
+    }
+    fun clearProfileFriendsFavoritesCache() {
+        profileFriends = null
+        profileFavorites = null
+        profileAboutMe = null
+        profileFriendsFavoritesUsername = null
+    }
+    // Friend profile pages (FriendProfileScreen) — header+stats scrape,
+    // friends, and favorites, one cache entry per username visited via
+    // Navigation's friendProfileStack. Lets paging through a whole chain
+    // in one excursion (own Profile -> friend -> friend-of-friend -> back
+    // -> back) reuse each page it's already scraped instead of re-fetching
+    // on every hop, while still starting fresh the next time that chain is
+    // entered — see clearFriendProfileCache, called once friendProfileStack
+    // empties back out to Profile. Same map-of-immutable-snapshots shape as
+    // stackDetailCache elsewhere in this file, just multi-field per key so
+    // FriendProfileScreen can observe profile/friends/favorites/loading
+    // together as one state object instead of four separate lookups.
+    data class FriendProfileState(
+        val profile: MalFriendProfile? = null,
+        val friends: List<MalFriend>? = null,
+        val favorites: MalFavorites? = null,
+        // Same "About Me" widget as profileAboutMe above, just scoped to
+        // this friend's username instead of the signed-in user's — fetched
+        // in the same round-trip as friends/favorites below.
+        val aboutMe: MalAboutMe? = null,
+        val loading: Boolean = false,
+        val friendsFavoritesLoading: Boolean = false,
+        val error: String? = null,
+    )
+    private val friendProfileStates = mutableStateMapOf<String, FriendProfileState>()
+    fun getFriendProfileState(username: String): FriendProfileState = friendProfileStates[username] ?: FriendProfileState()
+    fun loadFriendProfile(context: Context, username: String, force: Boolean = false) {
+        if (username.isBlank()) return
+        val current = friendProfileStates[username]
+        if (current?.loading == true) return
+        if (!force && current?.profile != null) return
+        friendProfileStates[username] = (current ?: FriendProfileState()).copy(loading = true, error = null)
+        viewModelScope.launch {
+            val api = MalProfileScrapeApi(context)
+            runCatching { api.fullProfile(username) }
+                .onSuccess { fp -> friendProfileStates[username] = (friendProfileStates[username] ?: FriendProfileState()).copy(profile = fp, loading = false, error = null) }
+                .onFailure { e ->
+                    if (e is MalSessionExpired) MalSessionCookie(context).clear()
+                    friendProfileStates[username] = (friendProfileStates[username] ?: FriendProfileState()).copy(loading = false, error = "Couldn't load this profile — try again.")
+                }
+        }
+    }
+    fun loadFriendProfileFriendsFavorites(context: Context, username: String, force: Boolean = false) {
+        if (username.isBlank()) return
+        val current = friendProfileStates[username]
+        if (current?.friendsFavoritesLoading == true) return
+        if (!force && current?.favorites != null) return
+        friendProfileStates[username] = (current ?: FriendProfileState()).copy(friendsFavoritesLoading = true)
+        viewModelScope.launch {
+            val api = MalProfileScrapeApi(context)
+            runCatching {
+                val f = api.friends(username)
+                val fav = resolveFavoritesEnglishTitles(context, api.favorites(username))
+                val about = api.aboutMe(username)
+                friendProfileStates[username] = (friendProfileStates[username] ?: FriendProfileState()).copy(friends = f, favorites = fav, aboutMe = about, friendsFavoritesLoading = false)
+            }.onFailure { e ->
+                if (e is MalSessionExpired) MalSessionCookie(context).clear()
+                friendProfileStates[username] = (friendProfileStates[username] ?: FriendProfileState()).copy(friendsFavoritesLoading = false)
+            }
+        }
+    }
+    // Pull-to-refresh on a friend's page — re-scrapes both the profile and
+    // the friends/favorites for just that username, same force-refetch
+    // shape as refreshProfileFriendsFavorites above.
+    fun refreshFriendProfile(context: Context, username: String) {
+        loadFriendProfile(context, username, force = true)
+        loadFriendProfileFriendsFavorites(context, username, force = true)
+    }
+    // Drops every cached friend page — called once friendProfileStack
+    // (Navigation.kt) empties back out to Profile, so the next excursion
+    // into a friend's page starts from a clean scrape rather than showing
+    // whatever was cached from a previous visit.
+    fun clearFriendProfileCache() { friendProfileStates.clear() }
     // NSFW off by default
     var nsfwEnabled by mutableStateOf(false); private set
     var amoledDark by mutableStateOf(false); private set
@@ -858,6 +1043,70 @@ class LibraryViewModel : ViewModel() {
         }
     }
 
+    // Discover's Users tab — a MAL user isn't a MediaItem either, same
+    // reasoning as Character/People/Companies above. Unlike those three
+    // this one both paginates (MAL's own show=N offset) and carries its
+    // own advanced filters (location/age range/gender), so it needs a
+    // little more state than a plain results list.
+    private val malUserApi by lazy { MalUserApi() }
+    var userResults by mutableStateOf<List<UserSummary>>(emptyList()); private set
+    var userSearching by mutableStateOf(false); private set
+    var userError by mutableStateOf<String?>(null); private set
+    var userHasMore by mutableStateOf(false); private set
+    var userLoadingMore by mutableStateOf(false); private set
+    var userFilters by mutableStateOf(UserSearchFilters()); private set
+    private var userSearchJob: kotlinx.coroutines.Job? = null
+    private var userLoadMoreJob: kotlinx.coroutines.Job? = null
+    // 0-indexed page, mirrors MalUserApi.Page's own paging — bumped by
+    // loadMoreUserSearch and reset whenever a fresh search runs.
+    private var userSearchPage = 0
+
+    // Run a user search — query and/or advanced filters, either is
+    // enough on its own (MAL's users.php accepts a bare filter search
+    // with no q). No MAL-side minimum query length here, unlike
+    // Character/People/Company search, since users.php doesn't enforce
+    // one on its own advanced-search form.
+    fun runUserSearch(query: String, filters: UserSearchFilters = userFilters) {
+        discoverQuery = query; discoverTypeFilter = "Users"; userFilters = filters; discoverMode = DiscoverMode.Results
+        discoverScrollIndex = 0; discoverScrollOffset = 0
+        userSearchJob?.cancel(); userLoadMoreJob?.cancel()
+        userSearchPage = 0
+        if (query.isBlank() && !filters.isActive()) {
+            userResults = emptyList(); userSearching = false; userError = null; userHasMore = false; return
+        }
+        userSearchJob = viewModelScope.launch {
+            userSearching = true
+            runCatching { malUserApi.search(query, filters, page = 0) }
+                .onSuccess { userResults = it.users; userError = null; userHasMore = it.hasMore }
+                .onFailure {
+                    // Same cancellation-isn't-a-failure reasoning as
+                    // runCompanySearch/runPersonSearch — switching the
+                    // type dropdown or re-filtering cancels the
+                    // in-flight job via userSearchJob?.cancel() above.
+                    if (it is kotlinx.coroutines.CancellationException) throw it
+                    userError = it.message ?: "Search failed"; userHasMore = false
+                }
+            userSearching = false
+        }
+    }
+
+    // Next show=N page for the current query+filters — mirrors
+    // loadMoreDiscoverSearch's shape but against MalUserApi directly
+    // since Users has just the one real paginated source, not
+    // DiscoverPaginationSource's title-search/genre-filtered split.
+    fun loadMoreUserSearch() {
+        if (userSearching || userLoadingMore || !userHasMore) return
+        userLoadMoreJob?.cancel()
+        val nextPage = userSearchPage + 1
+        userLoadMoreJob = viewModelScope.launch {
+            userLoadingMore = true
+            runCatching { malUserApi.search(discoverQuery, userFilters, page = nextPage) }
+                .onSuccess { userResults = userResults + it.users; userHasMore = it.hasMore; userSearchPage = nextPage }
+                .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it; userHasMore = false }
+            userLoadingMore = false
+        }
+    }
+
     // Fetch a tapped row's
     // shape openCharacterDetail/openPersonDetail document above
     // CompanyDetailScreenSkeleton right away, this
@@ -936,12 +1185,13 @@ class LibraryViewModel : ViewModel() {
             "Characters" -> runCharacterSearch(query)
             "People" -> runPersonSearch(query)
             "Companies" -> runCompanySearch(query)
+            "Users" -> runUserSearch(query)
             else -> {
                 discoverQuery = query; discoverTypeFilter = type; discoverMode = DiscoverMode.Results
-                discoverSearchJob?.cancel(); discoverLoadMoreJob?.cancel(); characterSearchJob?.cancel(); personSearchJob?.cancel(); companySearchJob?.cancel()
-                discoverResults = emptyList(); characterResults = emptyList(); personResults = emptyList(); companyResults = emptyList()
-                discoverSearching = false; characterSearching = false; personSearching = false; companySearching = false
-                discoverError = null; characterError = null; personError = null; companyError = null; discoverHasMore = false
+                discoverSearchJob?.cancel(); discoverLoadMoreJob?.cancel(); characterSearchJob?.cancel(); personSearchJob?.cancel(); companySearchJob?.cancel(); userSearchJob?.cancel(); userLoadMoreJob?.cancel()
+                discoverResults = emptyList(); characterResults = emptyList(); personResults = emptyList(); companyResults = emptyList(); userResults = emptyList()
+                discoverSearching = false; characterSearching = false; personSearching = false; companySearching = false; userSearching = false; userLoadingMore = false
+                discoverError = null; characterError = null; personError = null; companyError = null; userError = null; discoverHasMore = false; userHasMore = false
                 discoverPaginationSource = DiscoverPaginationSource.None
             }
         }
@@ -1113,7 +1363,7 @@ class LibraryViewModel : ViewModel() {
         delete(item.id, item.type)
         if (signedIn) viewModelScope.launch { runCatching { MalApi(context).deleteEntry(item) }.onFailure { error = "MAL sync failed: ${it.message ?: "unknown error"}" } }
     }
-    fun signOut(context: Context) { MalApi(context).signOut(); signedIn = false; items = emptyList(); malProfile = null; libraryThemesBackfilled = false }
+    fun signOut(context: Context) { MalApi(context).signOut(); signedIn = false; items = emptyList(); malProfile = null; libraryThemesBackfilled = false; clearProfileFriendsFavoritesCache(); clearFriendProfileCache() }
 
     // Load home browse rows
     fun loadDiscoverBrowse(context: Context) {
@@ -1514,6 +1764,7 @@ class LibraryViewModel : ViewModel() {
         characterSearchJob?.cancel(); characterResults = emptyList(); characterError = null; characterSearching = false
         personSearchJob?.cancel(); personResults = emptyList(); personError = null; personSearching = false
         companySearchJob?.cancel(); companyResults = emptyList(); companyError = null; companySearching = false
+        userSearchJob?.cancel(); userLoadMoreJob?.cancel(); userResults = emptyList(); userError = null; userSearching = false; userLoadingMore = false; userHasMore = false; userFilters = UserSearchFilters(); userSearchPage = 0
         // Drop the raw studio/author
         // whole process — it
         // page didn't re-scrape MAL.

@@ -41,8 +41,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.boundsInRoot
@@ -74,8 +72,11 @@ import com.kiko.tracker.data.model.MediaType
 import com.kiko.tracker.data.model.PersonSummary
 import com.kiko.tracker.data.model.SeasonName
 import com.kiko.tracker.data.model.currentSeasonName
+import com.kiko.tracker.data.model.UserSearchFilters
+import com.kiko.tracker.data.model.UserSummary
 import com.kiko.tracker.data.model.WatchStatus
 import com.kiko.tracker.data.model.displayTitle
+import com.kiko.tracker.data.model.localBroadcast
 import com.kiko.tracker.data.model.oneDecimal
 import com.kiko.tracker.data.model.resolvedDiscoverType
 import com.kiko.tracker.data.model.twoDecimals
@@ -110,12 +111,14 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
     onSeasonal: () -> Unit,
     onStacks: () -> Unit,
     onRecommendations: () -> Unit,
+    onSchedule: (java.time.DayOfWeek) -> Unit = {},
     onExitResults: () -> Unit = vm::exitDiscoverSearch,
     onEdit: (MediaItem) -> Unit = {},
     selectedItem: MediaItem? = null,
     onOpenCharacter: (Int) -> Unit = {},
     onOpenPerson: (Int) -> Unit = {},
     onOpenCompany: (Int) -> Unit = {},
+    onOpenUser: (String, String?) -> Unit = { _, _ -> },
 ) {
     val context = LocalContext.current
     // loadHomeExtras() populates both trendingManga
@@ -129,8 +132,8 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
         transitionSpec = { if (targetState == DiscoverMode.Results) PushEnter togetherWith PushExit else PopEnter togetherWith PopExit },
         label = "discover-mode",
     ) { mode ->
-        if (mode == DiscoverMode.Results) DiscoverResultsScreen(vm, context, onOpenDetail, onExitResults, onEdit, selectedItem, onOpenCharacter, onOpenPerson, onOpenCompany)
-        else DiscoverBrowseScreen(vm, context, onOpenDetail, onRanking, onSeasonal, onStacks, onRecommendations, onEdit, selectedItem)
+        if (mode == DiscoverMode.Results) DiscoverResultsScreen(vm, context, onOpenDetail, onExitResults, onEdit, selectedItem, onOpenCharacter, onOpenPerson, onOpenCompany, onOpenUser)
+        else DiscoverBrowseScreen(vm, context, onOpenDetail, onRanking, onSeasonal, onStacks, onRecommendations, onSchedule, onEdit, selectedItem)
     }
 }
 // Discover landing page
@@ -143,6 +146,7 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
     onSeasonal: () -> Unit,
     onStacks: () -> Unit,
     onRecommendations: () -> Unit,
+    onSchedule: (java.time.DayOfWeek) -> Unit = {},
     onEdit: (MediaItem) -> Unit = {},
     selectedItem: MediaItem? = null
 ) {
@@ -166,9 +170,17 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
     val newSeasonPremieres = remember(vm.visibleDiscoverNewSeason, curYear, curSeason) {
         vm.visibleDiscoverNewSeason.filter { it.startDate == curYear && it.season.equals(curSeason.label, ignoreCase = true) }
     }
+    // Everything airing today, regardless of premiere date — same
+    // localBroadcast() day-bucketing ScheduleScreen uses, just filtered
+    // down to today's day-of-week and sorted by local time (not shown).
+    val today = remember { java.time.LocalDate.now().dayOfWeek }
+    val todayReleases = remember(vm.visibleDiscoverNewSeason, today) {
+        vm.visibleDiscoverNewSeason.mapNotNull { item -> item.localBroadcast()?.let { (day, time) -> if (day == today) item to time else null } }
+            .sortedBy { it.second }.map { it.first }
+    }
 
     Box(Modifier.fillMaxSize()) {
-        LazyColumn(state = listState, contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = if (showGoToTop) 90.dp else 24.dp)) {
+        LazyColumn(state = listState, contentPadding = PaddingValues(start = 14.dp, end = 14.dp, bottom = if (showGoToTop) 90.dp else 24.dp)) {
             item {
                 // Search now lives on
                 // DiscoverResultsScreen) instead of an
@@ -240,6 +252,20 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
                     }
                 }
 
+                // Today row — everything releasing today, no time shown,
+                // just a scrollable list. "See more" jumps into the full
+                // Release Schedule pre-selected on today.
+                if (todayReleases.isNotEmpty()) {
+                    item {
+                        SectionTitle("Today", "See more", { onSchedule(today) })
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(11.dp)) {
+                            itemsIndexed(todayReleases, key = { _, it -> it.id }) { index, item ->
+                                StaggeredItem(index) { BrowseCard(item, trackedOpenDetail, myStatus = item.id.toIntOrNull()?.let { myListStatus[it to item.type] }, onLongPress = onEdit, isSelected = selectedItem?.id == item.id && selectedItem?.type == item.type) }
+                            }
+                        }
+                    }
+                }
+
                 // Top 10 upcoming row
                 val upcoming = vm.visibleDiscoverUpcoming
                 if (upcoming.isNotEmpty()) {
@@ -301,7 +327,7 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
         GoToTopButton(
             visible = showGoToTop,
             onClick = { scope.launch { listState.animateScrollToItem(0) } },
-            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 20.dp, bottom = 20.dp),
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 14.dp, bottom = 20.dp),
         )
     }
 }
@@ -341,10 +367,11 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
 // Interest Stacks homepage —
 // Greets the user when
 
-@Composable fun DiscoverResultsScreen(vm: LibraryViewModel, context: Context, onOpenDetail: (MediaItem) -> Unit, onExitResults: () -> Unit = vm::exitDiscoverSearch, onEdit: (MediaItem) -> Unit = {}, selectedItem: MediaItem? = null, onOpenCharacter: (Int) -> Unit = {}, onOpenPerson: (Int) -> Unit = {}, onOpenCompany: (Int) -> Unit = {}) {
+@Composable fun DiscoverResultsScreen(vm: LibraryViewModel, context: Context, onOpenDetail: (MediaItem) -> Unit, onExitResults: () -> Unit = vm::exitDiscoverSearch, onEdit: (MediaItem) -> Unit = {}, selectedItem: MediaItem? = null, onOpenCharacter: (Int) -> Unit = {}, onOpenPerson: (Int) -> Unit = {}, onOpenCompany: (Int) -> Unit = {}, onOpenUser: (String, String?) -> Unit = { _, _ -> }) {
     val c = LocalKikoColors.current
     var query by remember { mutableStateOf(vm.discoverQuery) }
     var filterSheetOpen by remember { mutableStateOf(false) }
+    var userFilterSheetOpen by remember { mutableStateOf(false) }
     // Genre section only pre-expands the first time the sheet is opened
     // via requestDiscoverFilterSheet() below — reset once consumed so a
     // later manual tap on the filter icon behaves normally (expanded only
@@ -389,6 +416,10 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
         vm.saveDiscoverScroll(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset)
         onOpenCompany(result.malId)
     }
+    val openUserResult: (UserSummary) -> Unit = { result ->
+        vm.saveDiscoverScroll(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset)
+        onOpenUser(result.username, result.avatarUrl.takeIf { it.isNotBlank() })
+    }
     // Search results come straight
     // each result's baked-in status
     // update on its own
@@ -430,10 +461,14 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
     LaunchedEffect(listState) {
         snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index to listState.layoutInfo.totalItemsCount }
             .distinctUntilChanged()
-            .collect { (lastVisible, total) -> if (lastVisible != null && total > 0 && lastVisible >= total - 1) vm.loadMoreDiscoverSearch(context) }
+            .collect { (lastVisible, total) ->
+                if (lastVisible != null && total > 0 && lastVisible >= total - 1) {
+                    if (vm.discoverTypeFilter == "Users") vm.loadMoreUserSearch() else vm.loadMoreDiscoverSearch(context)
+                }
+            }
     }
     Box(Modifier.fillMaxSize().onGloballyPositioned { containerBounds = it.boundsInRoot() }) {
-        LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = if (showGoToTop) 90.dp else 24.dp)) {
+        LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(start = 14.dp, end = 14.dp, bottom = if (showGoToTop) 90.dp else 24.dp)) {
             item {
                 Row(Modifier.fillMaxWidth().padding(top = 20.dp, bottom = 18.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = onExitResults, modifier = Modifier.size(38.dp).clip(RoundedCornerShape(kikoCorner(13.dp))).background(c.surfaceContainerHigh)) { Icon(Icons.Default.ArrowBack, "Back to Discover", tint = c.ink) }
@@ -456,9 +491,16 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
                     if (vm.discoverTypeFilter == "Anime" || vm.discoverTypeFilter == "Manga") {
                         FilterIconButton(active = vm.discoverFilters.isActive(), onClick = { filterSheetOpen = true; vm.prewarmGenreLookup() }, modifier = Modifier.padding(start = 10.dp))
                     }
+                    // Users' own advanced filters (location/age/gender)
+                    // — a separate sheet from Anime/Manga's since none
+                    // of that one's genre/format/year facets apply here.
+                    if (vm.discoverTypeFilter == "Users") {
+                        FilterIconButton(active = vm.userFilters.isActive(), onClick = { userFilterSheetOpen = true }, modifier = Modifier.padding(start = 10.dp))
+                    }
                 }
                 // Fixes type/format mismatch
                 if (filterSheetOpen) AdvancedFilterSheet(vm.discoverFilters, type = vm.discoverTypeFilter, onDismiss = { filterSheetOpen = false; forceExpandGenre = false }, onApply = { filterSheetOpen = false; forceExpandGenre = false; vm.runDiscoverSearch(context, query, resolvedDiscoverType(it.format, vm.discoverTypeFilter), it) }, forceExpandGenre = forceExpandGenre)
+                if (userFilterSheetOpen) UserAdvancedFilterSheet(vm.userFilters, onDismiss = { userFilterSheetOpen = false }, onApply = { userFilterSheetOpen = false; vm.runUserSearch(query, it) })
 
                 Row(Modifier.fillMaxWidth().padding(top = 15.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                     DiscoverTypeDropdown(current = vm.discoverTypeFilter, onSelect = { picked -> vm.selectDiscoverType(context, picked, query) })
@@ -481,6 +523,10 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
                     "Companies" -> {
                         if (vm.companySearching) LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(top = 6.dp), color = c.primary, trackColor = c.surfaceLow)
                         vm.companyError?.let { Text(it, color = c.danger, fontSize = 13.sp, modifier = Modifier.padding(top = 16.dp)) }
+                    }
+                    "Users" -> {
+                        if (vm.userSearching) LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(top = 6.dp), color = c.primary, trackColor = c.surfaceLow)
+                        vm.userError?.let { Text(it, color = c.danger, fontSize = 13.sp, modifier = Modifier.padding(top = 16.dp)) }
                     }
                     "Anime", "Manga" -> {
                         if (vm.discoverSearching) LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(top = 6.dp), color = c.primary, trackColor = c.surfaceLow)
@@ -545,6 +591,28 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
                                 }
                             }
                         }
+                    }
+                }
+                "Users" -> {
+                    if (!vm.userSearching && vm.userResults.isEmpty() && vm.userError == null) {
+                        val emptyMessage = if (vm.discoverQuery.isBlank() && !vm.userFilters.isActive()) "Search for a user." else "No users found."
+                        item { Text(emptyMessage, color = c.muted, modifier = Modifier.fillMaxWidth().padding(top = 40.dp), textAlign = TextAlign.Center) }
+                    }
+                    val userResultsList = vm.userResults
+                    if (vm.userSearching && userResultsList.isEmpty()) {
+                        item { ListRowSkeletonGroup(6) }
+                    } else {
+                        itemsIndexed(userResultsList, key = { _, it -> "user_${it.username}" }) { index, result ->
+                            StaggeredItem(index, staggerSeen) {
+                                Column {
+                                    UserSearchResultRow(result, onTap = { openUserResult(result) })
+                                    if (index < userResultsList.lastIndex) HorizontalDivider(modifier = Modifier.padding(start = 100.dp), thickness = 1.dp, color = c.outlineVariant)
+                                }
+                            }
+                        }
+                    }
+                    if (vm.userLoadingMore) {
+                        item { Box(Modifier.fillMaxWidth().padding(vertical = 20.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = c.primary, strokeWidth = 2.dp, modifier = Modifier.size(22.dp)) } }
                     }
                 }
                 else -> {
@@ -612,7 +680,7 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
         GoToTopButton(
             visible = showGoToTop,
             onClick = { scope.launch { listState.animateScrollToItem(0) } },
-            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 20.dp, bottom = 20.dp),
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 14.dp, bottom = 20.dp),
         )
         // Floating title suggestions as
         // run that search; tapping
@@ -773,7 +841,6 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
 
 @Composable fun BrowseCard(item: MediaItem, onOpenDetail: (MediaItem) -> Unit, subtitle: String? = null, myStatus: WatchStatus? = null, onLongPress: ((MediaItem) -> Unit)? = null, isSelected: Boolean = false) {
     val c = LocalKikoColors.current
-    val haptic = LocalHapticFeedback.current
     val bg by animateColorAsState(if (isSelected) c.primaryContainer else Color.Transparent, label = "browseCardSelectBg")
     val pad by animateDpAsState(if (isSelected) 8.dp else 0.dp, label = "browseCardSelectPad")
     Column(
@@ -783,7 +850,7 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
             .background(bg)
             .kikoCombinedClickable(
                 onClick = { onOpenDetail(item) },
-                onLongClick = onLongPress?.let { edit -> { haptic.performHapticFeedback(HapticFeedbackType.LongPress); edit(item) } },
+                onLongClick = onLongPress?.let { edit -> { edit(item) } },
             )
             // animateDpAsState on `pad` above
             // value frame-by-frame, so the
@@ -796,7 +863,7 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
         // this row's old fixed
         // Crop was cutting off
         Cover(item, Modifier.fillMaxWidth().aspectRatio(84f / 118f), showStatus = true, overrideStatus = myStatus, selected = isSelected)
-        Text(item.displayTitle(), fontWeight = FontWeight.Bold, fontSize = 13.sp, color = c.ink, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 7.dp))
+        Text(item.displayTitle(), fontWeight = FontWeight.Bold, fontSize = 13.sp, color = c.ink, maxLines = 2, overflow = TextOverflow.Ellipsis, lineHeight = 16.sp, modifier = Modifier.padding(top = 7.dp))
         Text(subtitle ?: (if (item.score > 0) "★ ${item.score.oneDecimal()}" else item.genre), color = c.muted, fontWeight = FontWeight.Medium, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
@@ -804,7 +871,6 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
 
 @Composable fun SearchResultRow(item: MediaItem, loading: Boolean, onTap: () -> Unit, onLongPress: (() -> Unit)? = null, isSelected: Boolean = false, myStatus: WatchStatus? = null) {
     val c = LocalKikoColors.current
-    val haptic = LocalHapticFeedback.current
     val bg by animateColorAsState(if (isSelected) c.primaryContainer else Color.Transparent, label = "searchResultSelectBg")
     val hPad by animateDpAsState(if (isSelected) 10.dp else 0.dp, label = "searchResultSelectPad")
     Row(
@@ -815,7 +881,7 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
             .kikoCombinedClickable(
                 enabled = !loading,
                 onClick = onTap,
-                onLongClick = onLongPress?.let { edit -> { haptic.performHapticFeedback(HapticFeedbackType.LongPress); edit() } },
+                onLongClick = onLongPress?.let { edit -> { edit() } },
             )
             .padding(horizontal = hPad, vertical = 14.dp),
         verticalAlignment = Alignment.Top,
@@ -865,7 +931,7 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
 @Composable fun DiscoverTypeDropdown(current: String, onSelect: (String) -> Unit) {
     val c = LocalKikoColors.current
     var expanded by remember { mutableStateOf(false) }
-    val options = listOf("Anime", "Manga", "Characters", "Companies", "People")
+    val options = listOf("Anime", "Manga", "Characters", "Companies", "People", "Users")
     Box {
         FilterChip(
             selected = true,
@@ -980,6 +1046,103 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
     }
 }
 
+// One row in the Users tab's search results — same rounded-square
+// treatment as CompanySearchResultRow above (no cropping to a face —
+// MAL user avatars, like company logos, come in whatever aspect ratio
+// the user uploaded), with the joined date standing in for the
+// japanese/altName subtitle line those two show.
+@Composable fun UserSearchResultRow(entry: UserSummary, onTap: () -> Unit) {
+    val c = LocalKikoColors.current
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(kikoCorner(16.dp))).kikoClickable(onClick = onTap).padding(vertical = 14.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Box(Modifier.size(92.dp).clip(RoundedCornerShape(kikoCorner(14.dp))).background(c.surfaceContainerHigh)) {
+            if (entry.avatarUrl.isNotBlank()) {
+                AsyncImage(model = entry.avatarUrl, contentDescription = entry.username, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            } else {
+                Text(entry.username.take(1).uppercase().ifBlank { "?" }, fontWeight = FontWeight.Bold, fontSize = 26.sp, color = c.muted, modifier = Modifier.align(Alignment.Center))
+            }
+        }
+        Column(Modifier.weight(1f).padding(start = 16.dp, end = 6.dp)) {
+            Text(entry.username, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = c.ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (entry.joined.isNotBlank()) {
+                Text("Joined ${entry.joined}", color = c.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp))
+            }
+        }
+    }
+}
+
+// Users tab's own advanced filters sheet — MAL's users.php Location/Age
+// range/Gender panel, a much smaller sibling of AdvancedFilterSheet
+// above (none of that one's genre/format/year facets apply to a user
+// search).
+@Composable fun UserAdvancedFilterSheet(current: UserSearchFilters, onDismiss: () -> Unit, onApply: (UserSearchFilters) -> Unit) {
+    val c = LocalKikoColors.current
+    var location by remember { mutableStateOf(current.location) }
+    var ageLow by remember { mutableStateOf(current.ageLow?.toString() ?: "") }
+    var ageHigh by remember { mutableStateOf(current.ageHigh?.toString() ?: "") }
+    var gender by remember { mutableStateOf(current.gender) }
+    val genderOptions = listOf("", "Male", "Female", "Non-Binary")
+    val sheetState = rememberModalBottomSheetState()
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState, containerColor = c.surfaceContainerLow, contentWindowInsets = { WindowInsets(0, 0, 0, 0) }) {
+        Column(Modifier.padding(horizontal = 22.dp).padding(bottom = 28.dp).imePadding().verticalScroll(rememberScrollState())) {
+            Text("Users", color = c.primary, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            Text("Advanced filters", style = MaterialTheme.typography.headlineSmall, color = c.ink, modifier = Modifier.padding(top = 5.dp, bottom = 4.dp))
+
+            Text("Location", color = c.muted, fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.padding(top = 18.dp, bottom = 8.dp))
+            OutlinedTextField(
+                value = location, onValueChange = { location = it },
+                placeholder = { Text("Ex: California") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            Text("Age", color = c.muted, fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.padding(top = 18.dp, bottom = 8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = ageLow, onValueChange = { ageLow = it.filter(Char::isDigit) },
+                    placeholder = { Text("Min") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(1f),
+                )
+                Text("to", color = c.muted, fontSize = 13.sp)
+                OutlinedTextField(
+                    value = ageHigh, onValueChange = { ageHigh = it.filter(Char::isDigit) },
+                    placeholder = { Text("Max") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(1f),
+                )
+            }
+
+            Text("Gender", color = c.muted, fontWeight = FontWeight.Bold, fontSize = 12.sp, modifier = Modifier.padding(top = 18.dp, bottom = 8.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                genderOptions.forEach { option ->
+                    FilterChip(
+                        selected = gender == option,
+                        onClick = { gender = option },
+                        label = { Text(option.ifBlank { "Don't care" }) },
+                        colors = kikoFilterChipColors(),
+                    )
+                }
+            }
+
+            Row(Modifier.fillMaxWidth().padding(top = 26.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(
+                    onClick = { location = ""; ageLow = ""; ageHigh = ""; gender = "" },
+                    modifier = Modifier.weight(1f),
+                ) { Text("Reset") }
+                Button(
+                    onClick = { onApply(UserSearchFilters(location = location.trim(), ageLow = ageLow.toIntOrNull(), ageHigh = ageHigh.toIntOrNull(), gender = gender)) },
+                    modifier = Modifier.weight(1f),
+                ) { Text("Apply") }
+            }
+        }
+    }
+}
+
 fun episodeAndYear(item: MediaItem): String {
     val unit = if (item.type == MediaType.Anime) "ep" else "ch"
     val episodes = if (item.total > 0) "${item.total} $unit" else null
@@ -1009,7 +1172,7 @@ fun formatExact(n: Int): String = "%,d".format(n)
             state = gridState,
             columns = GridCells.Fixed(3),
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = if (showGoToTop) 90.dp else 24.dp),
+            contentPadding = PaddingValues(start = 14.dp, end = 14.dp, bottom = if (showGoToTop) 90.dp else 24.dp),
             horizontalArrangement = Arrangement.spacedBy(11.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
@@ -1037,7 +1200,7 @@ fun formatExact(n: Int): String = "%,d".format(n)
         GoToTopButton(
             visible = showGoToTop,
             onClick = { scope.launch { gridState.animateScrollToItem(0) } },
-            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 20.dp, bottom = 20.dp),
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 14.dp, bottom = 20.dp),
         )
     }
 }
@@ -1045,7 +1208,6 @@ fun formatExact(n: Int): String = "%,d".format(n)
 
 @Composable fun RecommendationGridCard(item: MediaItem, onOpenDetail: (MediaItem) -> Unit, myStatus: WatchStatus? = null, onLongPress: ((MediaItem) -> Unit)? = null, isSelected: Boolean = false) {
     val c = LocalKikoColors.current
-    val haptic = LocalHapticFeedback.current
     val bg by animateColorAsState(if (isSelected) c.primaryContainer else Color.Transparent, label = "recommendationSelectBg")
     val pad by animateDpAsState(if (isSelected) 8.dp else 0.dp, label = "recommendationSelectPad")
     Column(
@@ -1055,7 +1217,7 @@ fun formatExact(n: Int): String = "%,d".format(n)
             .background(bg)
             .kikoCombinedClickable(
                 onClick = { onOpenDetail(item) },
-                onLongClick = onLongPress?.let { edit -> { haptic.performHapticFeedback(HapticFeedbackType.LongPress); edit(item) } },
+                onLongClick = onLongPress?.let { edit -> { edit(item) } },
             )
             // animateDpAsState on `pad` above
             // value frame-by-frame, so the

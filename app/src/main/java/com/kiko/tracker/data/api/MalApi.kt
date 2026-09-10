@@ -128,8 +128,12 @@ data class ForumTopic(
 // One topic listing page
 data class ForumTopicsPage(val items: List<ForumTopic>, val hasMore: Boolean)
 
-// Single topic reply
-data class ForumPost(val id: Int, val number: Int, val createdAt: String, val author: ForumUser, val body: String, val signature: String = "")
+// Single topic reply. replyToAuthor/replyToBody carry MAL's "Reply to X" quoted-preview block —
+// only populated when the data source can see it (currently MalForumScrapeApi and this app's own
+// optimistic just-sent post; the official REST API — MalApi.forumTopic below — has no parent-post
+// field in its JSON, so REST-sourced posts always leave these blank, same as signature/poll gaps
+// already documented on MalForumScrapeApi).
+data class ForumPost(val id: Int, val number: Int, val createdAt: String, val author: ForumUser, val body: String, val signature: String = "", val replyToAuthor: String = "", val replyToBody: String = "")
 
 data class ForumPollOption(val text: String, val votes: Int)
 data class ForumPoll(val question: String, val closed: Boolean, val options: List<ForumPollOption>)
@@ -157,6 +161,20 @@ data class MalProfile(
     val animeOnHold: Int = 0,
     val animeDropped: Int = 0,
     val animePlanToWatch: Int = 0,
+    // Not in MAL's official API at all (no manga_statistics field exists) —
+    // populated by MalProfileScrapeApi.applyMangaStats() scraping the profile
+    // page instead. Zero/default until a cookie session has been established.
+    val mangaDaysRead: Double = 0.0,
+    val mangaMeanScore: Double = 0.0,
+    val mangaChaptersRead: Int = 0,
+    val mangaVolumesRead: Int = 0,
+    val mangaReread: Int = 0,
+    val mangaTotalEntries: Int = 0,
+    val mangaReading: Int = 0,
+    val mangaCompleted: Int = 0,
+    val mangaOnHold: Int = 0,
+    val mangaDropped: Int = 0,
+    val mangaPlanToRead: Int = 0,
 )
 
 class MalApi(private val context: Context) {
@@ -229,8 +247,9 @@ class MalApi(private val context: Context) {
         val body = authorized { get("$API/users/@me?fields=name,picture,gender,birthday,location,joined_at,anime_statistics") }
         val j = JSONObject(body)
         val stats = j.optJSONObject("anime_statistics") ?: JSONObject()
-        MalProfile(
-            name = j.optString("name"),
+        val username = j.optString("name")
+        val base = MalProfile(
+            name = username,
             picture = j.optString("picture"),
             gender = j.optString("gender").takeIf { it.isNotBlank() }?.let(::prettify) ?: "",
             location = j.optString("location"),
@@ -246,6 +265,12 @@ class MalApi(private val context: Context) {
             animeDropped = stats.optInt("num_items_dropped", 0),
             animePlanToWatch = stats.optInt("num_items_plan_to_watch", 0),
         )
+        // Manga stats aren't in MAL's official API at all — scraped from the
+        // profile page instead (see MalProfileScrapeApi). Falls back to the
+        // un-scraped profile if there's no cookie session yet or the scrape
+        // fails for any reason, so a stale/missing cookie never breaks the
+        // anime stats that already work.
+        runCatching { MalProfileScrapeApi(context).applyMangaStats(base, username) }.getOrDefault(base)
     }
 
     // Search anime and manga
@@ -466,10 +491,15 @@ class MalApi(private val context: Context) {
             .firstOrNull { it.title.equals("News Discussion", ignoreCase = true) }
             ?.id?.also { newsBoardIdCache = it }
         ?: return@withContext emptyList()
-        // Reuses forumTopics' own (now
-        // running a second, separate
+        // forumTopics' own sort=recent order is by last reply (see homeAnnouncement's doc
+        // comment below), so a news topic still collecting replies days later would outrank
+        // news that was actually posted more recently but hasn't picked up replies yet. Re-sort
+        // by created_at ourselves, same fix already used for homeAnnouncement, so this row
+        // always reflects what MAL's News board most recently posted, not what's most recently
+        // been talked about.
         forumTopics(boardId = newsBoardId, limit = limit + 6, withThumbnails = true).items
             .filterNot { it.isLocked }
+            .sortedByDescending { runCatching { java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", java.util.Locale.US).parse(it.createdAt)?.time }.getOrNull() ?: 0L }
             .mapNotNull { topic -> topic.imageUrl?.let { NewsSnapshot(topicId = topic.id, title = topic.title, imageUrl = it) } }
             .take(limit)
     }

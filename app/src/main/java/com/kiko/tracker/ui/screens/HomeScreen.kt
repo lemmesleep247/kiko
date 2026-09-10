@@ -59,6 +59,7 @@ import coil.request.ImageRequest
 import coil.size.Size
 import androidx.compose.ui.graphics.FilterQuality
 import kotlinx.coroutines.launch
+import com.kiko.tracker.data.api.MalHistoryEntry
 import com.kiko.tracker.data.api.NewsSnapshot
 import com.kiko.tracker.data.model.DiscoverSort
 import com.kiko.tracker.data.model.FeaturedArticleEntry
@@ -96,7 +97,7 @@ import com.kiko.tracker.ui.theme.pressScale
 import com.kiko.tracker.ui.theme.rememberStaggerMemory
 import com.kiko.tracker.viewmodel.LibraryViewModel
 
-@Composable fun HomeScreen(vm: LibraryViewModel, onOpenDetail: (MediaItem) -> Unit, onList: () -> Unit, onDiscover: () -> Unit, onRanking: () -> Unit, onSeasonal: () -> Unit, onSchedule: (java.time.DayOfWeek) -> Unit, onOpenTopic: (Int, String) -> Unit, onSeeNews: () -> Unit, onOpenStack: (Int, String) -> Unit, onOpenStacks: () -> Unit, onSignIn: () -> Unit, onSeeFeaturedArticles: () -> Unit = {}, onOpenFeaturedArticle: (String, String) -> Unit = { _, _ -> }, onOpenGenre: (String) -> Unit = {}) {
+@Composable fun HomeScreen(vm: LibraryViewModel, onOpenDetail: (MediaItem) -> Unit, onSeeHistory: () -> Unit, onDiscover: () -> Unit, onRanking: () -> Unit, onSeasonal: () -> Unit, onSchedule: (java.time.DayOfWeek) -> Unit, onOpenTopic: (Int, String) -> Unit, onSeeNews: () -> Unit, onOpenStack: (Int, String) -> Unit, onOpenStacks: () -> Unit, onSignIn: () -> Unit, onSeeFeaturedArticles: () -> Unit = {}, onOpenFeaturedArticle: (String, String) -> Unit = { _, _ -> }, onOpenGenre: (String) -> Unit = {}) {
     val c = LocalKikoColors.current
     val context = LocalContext.current
     LaunchedEffect(vm.signedIn) { vm.loadNewsSnapshots(context) }
@@ -106,21 +107,27 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
     // background sync — instead
     // change. Same remember(...) pattern
     val items = remember(vm.items, vm.nsfwEnabled) { vm.visibleItems }
-    // "Last Updated List" — combined anime+manga activity feed, mirroring
-    // MAL's "My Last List Updates" home widget. Pure client-side sort/take
-    // over `items`, which Home already loads for every other section above
-    // (ranking chips, etc.) — no extra network call is made here, so this
-    // can't gate or slow down the page.
-    val lastUpdated = remember(items) {
-        items.filter { it.updatedAt.isNotBlank() }.sortedByDescending { it.updatedAt }.take(5)
+    // "Last Updated List" — episode/chapter-level activity feed scraped
+    // off myanimelist.net/history (see MalHistoryScrapeApi), mirroring
+    // MAL's own "My Last List Updates" home widget more closely than the
+    // old items.updatedAt sort did (one row per update, not one per
+    // title). Loaded once per signed-in username, same shape as
+    // loadNewsSnapshots above.
+    LaunchedEffect(vm.malProfile?.name) { vm.malProfile?.name?.let { vm.loadHistory(context, it) } }
+    // Top 5 rows, newest first (MAL's own order), each paired with its
+    // cover/tint from `items` — the history page itself has neither, but
+    // `items` is already loaded for every other section on this screen, so
+    // this is a pure client-side join with no extra network call.
+    val lastUpdated = remember(vm.history, items) {
+        vm.history.take(5).map { entry -> entry to historyCoverColor(entry, items) }
     }
-    // Top 5 genres across the whole list, by how many items carry each
-    // genre tag — same `items` source as everything else above, so this
-    // is a pure client-side tally with no extra network call.
-    val topGenres = remember(items) {
-        items.asSequence().flatMap { it.genres.asSequence() }.filter { it.isNotBlank() }
-            .groupingBy { it }.eachCount().entries.sortedByDescending { it.value }.take(5).map { it.key }
-    }
+    // Top 10 genres, MAL-wide (not a per-user library tally) — fetched
+    // once via vm.loadHomeTopGenres(), then each genre's top-by-members
+    // cover is loaded together as a batch so covers can be de-duplicated
+    // across the row (see loadHomeTopGenreItems).
+    LaunchedEffect(Unit) { vm.loadHomeTopGenres(context) }
+    val topGenres = vm.homeTopGenres
+    LaunchedEffect(topGenres) { if (topGenres.isNotEmpty()) vm.loadHomeTopGenreItems(context, topGenres) }
     val today = java.time.LocalDate.now().dayOfWeek
     // Airing-next row pool —
     // re-filtering, re-parsing dates on,
@@ -216,32 +223,29 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
                             HomeFeaturedArticleRowSkeleton()
                         }
                     }
-                    // Last 5 anime/manga list activities (add/status change/
-                    // progress bump), newest first — combined the same way
-                    // MAL's own widget combines both list types. Rendered
-                    // with the shared ListRow (same look as the List screen,
-                    // divider included) and no onIncrement, so the "+1"
-                    // button is omitted.
+                    // Last 5 episode/chapter updates, newest first, scraped
+                    // off MAL's own history page (see the `lastUpdated`
+                    // comment above). Compact rows — tiny squircle cover,
+                    // date/time as a subtitle under the title — and no day
+                    // grouping here (showDay = false); "See more" opens the
+                    // full history list, which does group by day.
                     key("lastUpdated") {
                         if (lastUpdated.isNotEmpty()) {
-                            SectionTitle("Last Updated List", "See list", onList)
+                            SectionTitle("Last Updated List", "See more", onSeeHistory)
                             Column {
-                                // item.id alone is just the numeric MAL id, and anime
-                                // and manga ids aren't in the same namespace — an anime
-                                // and a manga can share the same id. Since this section
-                                // (unlike single-type screens elsewhere) mixes both
-                                // types, key on type+id so every row key is guaranteed
-                                // unique and recomposition/scroll stays smooth.
-                                lastUpdated.forEachIndexed { index, item ->
-                                    key(item.type, item.id) {
-                                        ListRow(item, trackedOpenDetail, vm = vm)
-                                        if (index < lastUpdated.lastIndex) HorizontalDivider(modifier = Modifier.padding(start = 100.dp), thickness = 1.dp, color = c.outlineVariant)
+                                // (type, mediaId, timeLabel) is unique per row — a
+                                // title can appear many times in history with
+                                // different updates, so mediaId alone isn't enough.
+                                lastUpdated.forEachIndexed { index, (entry, cover) ->
+                                    key(entry.type, entry.mediaId, entry.timeLabel) {
+                                        HistoryRow(entry, cover.first, cover.second, showDay = false) { openHistoryDetail(entry, items, context, vm, trackedOpenDetail) }
+                                        if (index < lastUpdated.lastIndex) HorizontalDivider(modifier = Modifier.padding(start = 68.dp), thickness = 1.dp, color = c.outlineVariant)
                                     }
                                 }
                             }
                         }
                     }
-                    // Top 5 genres by item count, rank-badged spotlight-style
+                    // Top 10 genres MAL-wide, rank-badged spotlight-style
                     // cards (same cover-banner-on-top language as
                     // StackSpotlightCard) in a horizontal row. Tapping a card
                     // jumps to Discover pre-filtered by that genre.
@@ -250,7 +254,7 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
                             SectionTitle("Top Genres", "Discover", onDiscover)
                             LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                 itemsIndexed(topGenres, key = { _, genre -> genre }) { index, genre ->
-                                    GenreCard(index + 1, genre, vm) { onOpenGenre(genre) }
+                                    GenreCard(index + 1, genre, vm.getCachedGenreTopItem(genre)) { onOpenGenre(genre) }
                                 }
                             }
                         }
@@ -341,29 +345,30 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
     }
 }
 // Rank-badged genre card for the Home "Top Genres" row — same
-// cover-banner-over-text language as StackSpotlightCard (StacksScreen.kt):
-// a top image banner, then title below. The banner shows the top MAL
-// search result for that genre (fetched/cached via
-// vm.loadGenreTopItem/getCachedGenreTopItem), falling back to a plain
-// genre icon tile while it loads or if nothing came back. Rank badge sits
-// over the banner, top-end.
-@Composable fun GenreCard(rank: Int, genre: String, vm: LibraryViewModel, modifier: Modifier = Modifier, onClick: () -> Unit) {
+// cover-then-label-below language as MiniCard (CommonComponents.kt): a
+// plain image tile, then icon + genre name outside/below it, not
+// overlaid on the art. Cover shape matches HistoryCover ("Last Updated
+// List" rows below) — a plain RoundedCornerShape(kikoCorner(12.dp)) tile,
+// not the bigger card-corner radius used elsewhere on Home. The cover
+// shows the top-by-members MAL result for that genre (batch fetched/
+// cached via vm.loadHomeTopGenreItems/getCachedGenreTopItem in
+// HomeScreen), falling back to a plain genre icon tile while it loads or
+// if nothing came back. Rank badge sits over the cover, top-end.
+@Composable fun GenreCard(rank: Int, genre: String, topItem: MediaItem?, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val c = LocalKikoColors.current
-    val context = LocalContext.current
-    LaunchedEffect(genre) { vm.loadGenreTopItem(context, genre) }
-    val topItem = vm.getCachedGenreTopItem(genre)
-    Column(
-        modifier
-            .width(130.dp)
-            .clip(RoundedCornerShape(kikoCorner(18.dp)))
-            .background(c.surfaceContainer)
-            .kikoClickable(onClick = onClick),
-    ) {
-        Box(Modifier.fillMaxWidth().height(96.dp)) {
-            if (topItem?.cover?.isNotBlank() == true) {
-                AsyncImage(model = topItem.cover, contentDescription = null, modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(topStart = kikoCorner(18.dp), topEnd = kikoCorner(18.dp))), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+    val hasCover = topItem?.cover?.isNotBlank() == true
+    Column(modifier.width(136.dp).kikoClickable(onClick = onClick)) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(150.dp)
+                .clip(RoundedCornerShape(kikoCorner(12.dp)))
+                .background(c.primaryContainer),
+        ) {
+            if (hasCover) {
+                AsyncImage(model = topItem!!.cover, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
             } else {
-                Box(Modifier.fillMaxSize().background(c.primaryContainer), contentAlignment = Alignment.Center) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Icon(genreIcon(genre), null, tint = c.onPrimaryContainer, modifier = Modifier.size(26.dp))
                 }
             }
@@ -398,10 +403,9 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
                 )
             }
         }
-        // Icon sits left-aligned above the genre name, below the banner —
-        // no need to center it against anything else on this line.
-        Icon(genreIcon(genre), null, tint = c.muted, modifier = Modifier.padding(start = 12.dp, top = 10.dp).size(18.dp))
-        Text(genre, color = c.ink, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 12.dp))
+        // Icon above the genre name, outside/below the cover.
+        Icon(genreIcon(genre), null, tint = c.muted, modifier = Modifier.padding(top = 8.dp).size(18.dp))
+        Text(genre, color = c.ink, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
     }
 }
 
@@ -992,6 +996,69 @@ fun filterLabelIcon(label: String): ImageVector = when (label) {
             // No increment action here
             // trailing slot instead of
             Icon(Icons.Default.ChevronRight, null, tint = c.muted, modifier = Modifier.size(22.dp))
+        }
+    }
+}
+
+// Joins a scraped MalHistoryEntry against `items` for a cover/tint pair —
+// the history page itself has neither (see MalHistoryScrapeApi's doc
+// comment). Falls back to the same neutral tint Cover() uses when a title
+// isn't (or is no longer) in the signed-in user's list, so HistoryCover
+// always has something to paint even without a matching item.
+fun historyCoverColor(entry: MalHistoryEntry, items: List<MediaItem>): Pair<String, Long> {
+    val match = items.firstOrNull { it.id == entry.mediaId && it.type == entry.type }
+    return (match?.cover.orEmpty()) to (match?.color ?: 0xFFB7C3F5)
+}
+
+// Opens a history row's title in Detail — the fast path when it's still in
+// `items` (same MediaItem instance every other Home section already has),
+// falling back to a live MAL fetch by id (same helper Favorites/About Me
+// rows use) for entries that aren't, or no longer are, in the signed-in
+// user's list.
+fun openHistoryDetail(entry: MalHistoryEntry, items: List<MediaItem>, context: android.content.Context, vm: LibraryViewModel, onOpenDetail: (MediaItem) -> Unit) {
+    val match = items.firstOrNull { it.id == entry.mediaId && it.type == entry.type }
+    if (match != null) onOpenDetail(match)
+    else entry.mediaId.toIntOrNull()?.let { id -> vm.openMalTitleDetail(context, id, entry.type, onOpenDetail) }
+}
+
+// Tiny squircle cover for HistoryRow — same crop/fallback-initial language
+// as the full-size Cover() above, just at a compact scale with a smaller
+// corner radius to match.
+@Composable fun HistoryCover(entry: MalHistoryEntry, coverUrl: String, tint: Long, modifier: Modifier = Modifier) {
+    Box(modifier.clip(RoundedCornerShape(kikoCorner(12.dp))).background(Color(tint)), contentAlignment = Alignment.Center) {
+        if (coverUrl.isNotBlank()) {
+            AsyncImage(model = coverUrl, contentDescription = entry.title, modifier = Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+        } else {
+            Text(entry.title.take(1), fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.White.copy(.85f))
+        }
+    }
+}
+
+// Compact row for a single history update — tiny squircle cover, title,
+// and "ep./chap. N · date/time" as a one-line subtitle. [showDay] toggles
+// whether that subtitle also carries entry.dayLabel: Home's flat "Last
+// Updated List" leaves it off (no day grouping at all, per-row date/time
+// is enough), while the full HistoryScreen turns it on for rows shown
+// outside their day-group header (defensive; that screen groups by day
+// itself, so in practice showDay rows shouldn't normally appear there).
+@Composable fun HistoryRow(entry: MalHistoryEntry, coverUrl: String, tint: Long, showDay: Boolean, onOpen: () -> Unit) {
+    val c = LocalKikoColors.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(kikoCorner(14.dp)))
+            .kikoClickable(onClick = onOpen)
+            .padding(vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        HistoryCover(entry, coverUrl, tint, Modifier.size(44.dp))
+        Column(Modifier.weight(1f).padding(start = 12.dp, end = 4.dp)) {
+            Text(entry.title, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, lineHeight = 17.sp, color = c.ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(
+                if (showDay) "${entry.progressLabel} · ${entry.dayLabel}, ${entry.timeLabel}" else "${entry.progressLabel} · ${entry.timeLabel}",
+                color = c.muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 2.dp),
+            )
         }
     }
 }

@@ -20,10 +20,18 @@ import com.kiko.tracker.data.api.RecommendedEntry
 import com.kiko.tracker.ui.screens.resolvedTitle
 import com.kiko.tracker.ui.theme.KikoColors
 
-enum class TitleLanguage(val label: String) { Romaji("Romaji"), English("English") }
+enum class TitleLanguage(val label: String) {
+    Romaji("Romaji"),
+    English("English")
+}
 
-val LocalTitleLanguage = staticCompositionLocalOf { TitleLanguage.Romaji }
 // Preferred title to show
+val LocalTitleLanguage = staticCompositionLocalOf { TitleLanguage.Romaji }
+
+enum class AppLanguage(val tag: String, val label: String, val nativeLabel: String) {
+    English("en", "English", "English"),
+    Hindi("hi", "Hindi", "हिंदी");
+}
 
 @Composable
 

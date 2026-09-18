@@ -5,7 +5,7 @@ val localProperties = Properties().apply {
     val file = rootProject.file("local.properties")
     if (file.exists()) file.inputStream().use(::load)
 }
-val malClientId = localProperties.getProperty("MAL_CLIENT_ID", "")
+val malClientId: String? = localProperties.getProperty("MAL_CLIENT_ID", "")
 
 plugins {
     id("com.android.application")
@@ -63,30 +63,31 @@ dependencies {
     // this BOM alone resolves to — so they're pinned explicitly below. Each
     // override bumps its whole AndroidX "atomic group" (e.g. all of
     // androidx.compose.ui:*) together, same as the BOM would.
-    implementation(platform("androidx.compose:compose-bom:2026.08.00"))
-    implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.activity:activity-compose:1.10.0")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.7")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
-    implementation("androidx.compose.ui:ui:1.12.1")
-    implementation("androidx.compose.ui:ui-tooling-preview:1.12.1")
-    implementation("androidx.compose.material3:material3:1.4.0")
-    implementation("androidx.compose.material:material-icons-extended")
-    implementation("androidx.compose.foundation:foundation:1.12.1")
-    implementation("io.coil-kt:coil-compose:2.7.0")
+    implementation(platform(libs.compose.bom))
+    implementation(libs.core.ktx)
+    implementation(libs.activity.compose)
+    implementation(libs.lifecycle.viewmodel.compose)
+    implementation(libs.lifecycle.viewmodel.ktx)
+    implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.compose.ui)
+    implementation(libs.compose.ui.tooling.preview)
+    implementation(libs.material3)
+    implementation(libs.material.icons.extended)
+    implementation(libs.compose.foundation)
+    implementation(libs.coil.compose)
     // Adds animated GIF/WebP decoding to Coil — without this, AsyncImage silently only ever
     // decodes and shows a GIF's first frame instead of playing it (see MainActivity.onCreate,
     // which registers the actual decoders with Coil's singleton ImageLoader).
-    implementation("io.coil-kt:coil-gif:2.7.0")
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("androidx.browser:browser:1.8.0")
-    implementation("androidx.webkit:webkit:1.12.1")
-    implementation("org.jsoup:jsoup:1.17.2")
-    debugImplementation("androidx.compose.ui:ui-tooling:1.12.1")
+    implementation(libs.coil.gif)
+    implementation(libs.okhttp)
+    implementation(libs.androidx.browser)
+    implementation(libs.androidx.webkit)
+    implementation(libs.jsoup)
+    debugImplementation(libs.compose.ui.tooling)
     // Installs src/main/baseline-prof.txt (below) onto the device on first run of a
     // release build, on API levels where the OS doesn't already read baseline profiles
     // straight from the APK. Without this dependency, a hand-authored or generated
     // baseline profile just sits unused in the APK — this is what actually applies it.
-    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
+    implementation(libs.profileinstaller)
+    implementation(libs.appcompat)
 }

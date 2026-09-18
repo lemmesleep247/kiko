@@ -14,13 +14,8 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -28,11 +23,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.browser.customtabs.CustomTabsIntent
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kiko.tracker.data.api.FavoriteKind
@@ -40,7 +31,7 @@ import com.kiko.tracker.data.api.MalApi
 import com.kiko.tracker.data.api.MalClub
 import com.kiko.tracker.data.api.MalFriend
 import com.kiko.tracker.data.api.StackBrowseKind
-import com.kiko.tracker.data.api.StackDetail
+import com.kiko.tracker.data.model.AppLanguage
 import com.kiko.tracker.data.model.CharacterDetail
 import com.kiko.tracker.data.model.ColorSource
 import com.kiko.tracker.data.model.CommunityTab
@@ -55,7 +46,7 @@ import com.kiko.tracker.data.model.PaletteStyle
 import com.kiko.tracker.data.model.PersonDetail
 import com.kiko.tracker.data.model.ReviewEntry
 import com.kiko.tracker.data.model.ThemeMode
-import com.kiko.tracker.data.model.prev
+import com.kiko.tracker.ui.components.AppLanguageSheet
 import com.kiko.tracker.ui.components.AvatarMenu
 import com.kiko.tracker.ui.components.BottomBar
 import com.kiko.tracker.ui.components.KikoNavigationRail
@@ -114,10 +105,10 @@ import com.kiko.tracker.ui.theme.resolveSeedColor
 import com.kiko.tracker.ui.theme.themedPalette
 import com.kiko.tracker.ui.theme.toMaterialColorScheme
 import com.kiko.tracker.util.AppUpdateChecker
+import com.kiko.tracker.util.LocaleManager
 import com.kiko.tracker.viewmodel.LibraryViewModel
 
 @Composable
-
 fun SyncSystemBars(darkTheme: Boolean, background: Color) {
     val view = LocalView.current
     if (!view.isInEditMode) {
@@ -282,7 +273,10 @@ fun TopScreen.isFullPage() = this is TopScreen.Detail || this is TopScreen.Ranki
 
 @Composable fun KikoApp(vm: LibraryViewModel = viewModel(), onSignIn: () -> Unit = {}, onSignOut: () -> Unit = {}, malLink: Uri? = null, onMalLinkHandled: () -> Unit = {}) {
     val context = LocalContext.current
-    var editor by remember { mutableStateOf<MediaItem?>(null) }; var themeOpen by remember { mutableStateOf(false) }; var titleLangOpen by remember { mutableStateOf(false) }
+    var editor by remember { mutableStateOf<MediaItem?>(null) };
+    var themeOpen by remember { mutableStateOf(false) };
+    var titleLangOpen by remember { mutableStateOf(false) }
+    var appLangOpen by remember { mutableStateOf(false) }
     var colorSourceOpen by remember { mutableStateOf(false) }; var paletteStyleOpen by remember { mutableStateOf(false) }
     var selectedItem by remember { mutableStateOf<MediaItem?>(null) }
     // Related title navigation stack
@@ -1002,10 +996,12 @@ fun TopScreen.isFullPage() = this is TopScreen.Detail || this is TopScreen.Ranki
                                     is TopScreen.FormatFilter -> FormatFilterScreen(vm = vm, type = screen.type, initialFormat = screen.format, onBack = { formatFilterOpen = null }, onOpenDetail = ::openDetail)
                                     is TopScreen.GenreFilter -> GenreFilterScreen(vm = vm, type = screen.type, initialGenre = screen.genre, onBack = { genreFilterOpen = null }, onOpenDetail = ::openDetail)
                                     TopScreen.SettingsPage -> SettingsScreen(
-                                        connected = vm.signedIn, themeMode = vm.themeMode, colorSource = vm.colorSource, paletteStyle = vm.paletteStyle, titleLanguage = vm.titleLanguage,
+                                        connected = vm.signedIn, themeMode = vm.themeMode, colorSource = vm.colorSource, paletteStyle = vm.paletteStyle,
+                                        titleLanguage = vm.titleLanguage, appLanguage = vm.appLanguage,
                                         nsfwEnabled = vm.nsfwEnabled, onNsfwChange = { vm.setNsfw(context, it) },
                                         amoledDark = vm.amoledDark, onAmoledDarkChange = { vm.setAmoledDark(context, it) },
-                                        onThemeClick = { themeOpen = true }, onColorClick = { colorSourceOpen = true }, onPaletteClick = { paletteStyleOpen = true }, onTitleLanguageClick = { titleLangOpen = true },
+                                        onThemeClick = { themeOpen = true }, onColorClick = { colorSourceOpen = true }, onPaletteClick = { paletteStyleOpen = true },
+                                        onTitleLanguageClick = { titleLangOpen = true }, onAppLanguageClick = { appLangOpen = true },
                                         updateInfo = vm.updateInfo, onAboutClick = { aboutOpen = true },
                                         onBack = { settingsPageOpen = false },
                                     )
@@ -1089,6 +1085,11 @@ fun TopScreen.isFullPage() = this is TopScreen.Detail || this is TopScreen.Ranki
             if (colorSourceOpen) ColorSourceSheet(vm.colorSource, vm.customColorHex, onDismiss = { colorSourceOpen = false }, onSelect = { vm.setColorSource(context, it) }, onCustomHexChange = { vm.setCustomColor(context, it) })
             if (paletteStyleOpen) PaletteStyleSheet(vm.paletteStyle, onDismiss = { paletteStyleOpen = false }, onSelect = { vm.setPaletteStyle(context, it); paletteStyleOpen = false })
             if (titleLangOpen) TitleLanguageSheet(vm.titleLanguage, onDismiss = { titleLangOpen = false }, onSelect = { vm.setTitleLanguage(context, it); titleLangOpen = false })
+            if (appLangOpen) AppLanguageSheet(vm.appLanguage, onDismiss = { appLangOpen = false }, onSelect = {
+                vm.setAppLanguage(context, it);
+                LocaleManager.setLocale(it.tag)
+                appLangOpen = false
+            })
             if (vm.updateDialogOpen) vm.updateInfo?.let { info ->
                 UpdateDialog(
                     info = info,

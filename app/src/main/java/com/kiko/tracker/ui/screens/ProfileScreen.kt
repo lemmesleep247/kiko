@@ -45,8 +45,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.browser.customtabs.CustomTabsIntent
+import androidx.compose.ui.res.stringResource
 import coil.compose.AsyncImage
 import com.kiko.tracker.BuildConfig
+import com.kiko.tracker.R
 import com.kiko.tracker.data.api.MalAboutMe
 import com.kiko.tracker.data.api.MalAboutMeItem
 import com.kiko.tracker.data.api.MalFavoriteEntry
@@ -54,6 +56,7 @@ import com.kiko.tracker.data.api.MalFavorites
 import com.kiko.tracker.data.api.MalFriend
 import com.kiko.tracker.data.api.MalProfile
 import com.kiko.tracker.data.api.MalSessionCookie
+import com.kiko.tracker.data.model.AppLanguage
 import com.kiko.tracker.data.model.ColorSource
 import com.kiko.tracker.data.model.ListViewMode
 import com.kiko.tracker.data.model.MediaItem
@@ -214,10 +217,10 @@ data class DetailPill(val icon: androidx.compose.ui.graphics.vector.ImageVector,
 
 // Full page for the
 @Composable fun SettingsScreen(
-    connected: Boolean, themeMode: ThemeMode, colorSource: ColorSource, paletteStyle: PaletteStyle, titleLanguage: TitleLanguage,
+    connected: Boolean, themeMode: ThemeMode, colorSource: ColorSource, paletteStyle: PaletteStyle, titleLanguage: TitleLanguage, appLanguage: AppLanguage,
     nsfwEnabled: Boolean, onNsfwChange: (Boolean) -> Unit,
     amoledDark: Boolean, onAmoledDarkChange: (Boolean) -> Unit,
-    onThemeClick: () -> Unit, onColorClick: () -> Unit, onPaletteClick: () -> Unit, onTitleLanguageClick: () -> Unit,
+    onThemeClick: () -> Unit, onColorClick: () -> Unit, onPaletteClick: () -> Unit, onTitleLanguageClick: () -> Unit, onAppLanguageClick: () -> Unit,
     updateInfo: AppUpdateInfo?, onAboutClick: () -> Unit, onBack: () -> Unit,
 ) {
     val c = LocalKikoColors.current
@@ -229,11 +232,11 @@ data class DetailPill(val icon: androidx.compose.ui.graphics.vector.ImageVector,
         }
         Box(Modifier.padding(top = 12.dp, bottom = 24.dp)) {
             SettingsSection(
-                connected = connected, themeMode = themeMode, colorSource = colorSource, paletteStyle = paletteStyle, titleLanguage = titleLanguage,
+                connected = connected, themeMode = themeMode, colorSource = colorSource, paletteStyle = paletteStyle, titleLanguage = titleLanguage, appLanguage = appLanguage,
                 nsfwEnabled = nsfwEnabled, onNsfwChange = onNsfwChange,
                 amoledDark = amoledDark, onAmoledDarkChange = onAmoledDarkChange,
                 onThemeClick = onThemeClick, onColorClick = onColorClick, onPaletteClick = onPaletteClick, onTitleLanguageClick = onTitleLanguageClick,
-                updateInfo = updateInfo, onAboutClick = onAboutClick,
+                onAppLanguageClick = onAppLanguageClick, updateInfo = updateInfo, onAboutClick = onAboutClick,
             )
         }
     }
@@ -940,10 +943,10 @@ fun malIdFromFavoriteUrl(url: String): Int? = runCatching { Uri.parse(url).pathS
 // Lives in the profile
 // (top-right of ProfileStatsScreen) —
 @Composable fun SettingsSection(
-    connected: Boolean, themeMode: ThemeMode, colorSource: ColorSource, paletteStyle: PaletteStyle, titleLanguage: TitleLanguage,
+    connected: Boolean, themeMode: ThemeMode, colorSource: ColorSource, paletteStyle: PaletteStyle, titleLanguage: TitleLanguage, appLanguage: AppLanguage,
     nsfwEnabled: Boolean, onNsfwChange: (Boolean) -> Unit,
     amoledDark: Boolean = false, onAmoledDarkChange: (Boolean) -> Unit = {},
-    onThemeClick: () -> Unit, onColorClick: () -> Unit, onPaletteClick: () -> Unit, onTitleLanguageClick: () -> Unit,
+    onThemeClick: () -> Unit, onColorClick: () -> Unit, onPaletteClick: () -> Unit, onTitleLanguageClick: () -> Unit, onAppLanguageClick: () -> Unit,
     updateInfo: AppUpdateInfo? = null, onAboutClick: () -> Unit = {},
 ) {
     val c = LocalKikoColors.current
@@ -952,8 +955,9 @@ fun malIdFromFavoriteUrl(url: String): Int? = runCatching { Uri.parse(url).pathS
         ListItem(headlineContent = { Text("Color", fontWeight = FontWeight.Bold, color = c.ink) }, supportingContent = { Text(colorSource.label, color = c.muted) }, leadingContent = { Icon(Icons.Default.ColorLens, null, tint = c.primary) }, trailingContent = { Icon(Icons.Default.ChevronRight, null, tint = c.muted) }, colors = ListItemDefaults.colors(containerColor = Color.Transparent), modifier = Modifier.clip(RoundedCornerShape(kikoCorner(16.dp))).kikoClickable(onClick = onColorClick))
         ListItem(headlineContent = { Text("Color palette", fontWeight = FontWeight.Bold, color = c.ink) }, supportingContent = { Text(paletteStyle.label, color = c.muted) }, leadingContent = { Icon(Icons.Default.Gradient, null, tint = c.primary) }, trailingContent = { Icon(Icons.Default.ChevronRight, null, tint = c.muted) }, colors = ListItemDefaults.colors(containerColor = Color.Transparent), modifier = Modifier.clip(RoundedCornerShape(kikoCorner(16.dp))).kikoClickable(onClick = onPaletteClick))
         ListItem(headlineContent = { Text("Title language", fontWeight = FontWeight.Bold, color = c.ink) }, supportingContent = { Text(titleLanguage.label, color = c.muted) }, leadingContent = { Icon(Icons.Default.Translate, null, tint = c.primary) }, trailingContent = { Icon(Icons.Default.ChevronRight, null, tint = c.muted) }, colors = ListItemDefaults.colors(containerColor = Color.Transparent), modifier = Modifier.clip(RoundedCornerShape(kikoCorner(16.dp))).kikoClickable(onClick = onTitleLanguageClick))
+        ListItem(headlineContent = { Text("App language", fontWeight = FontWeight.Bold, color = c.ink) }, supportingContent = { Text(appLanguage.label, color = c.muted) }, leadingContent = { Icon(Icons.Default.Translate, null, tint = c.primary) }, trailingContent = { Icon(Icons.Default.ChevronRight, null, tint = c.muted) }, colors = ListItemDefaults.colors(containerColor = Color.Transparent), modifier = Modifier.clip(RoundedCornerShape(kikoCorner(16.dp))).kikoClickable(onClick = onAppLanguageClick))
         // Pure-black backgrounds for OLED/AMOLED
-        ListItem(headlineContent = { Text("AMOLED black", fontWeight = FontWeight.Bold, color = c.ink) }, supportingContent = { Text("True black backgrounds in dark mode, saves battery on AMOLED screens", color = c.muted) }, leadingContent = { Icon(Icons.Default.DarkMode, null, tint = c.primary) }, trailingContent = { Switch(checked = amoledDark, onCheckedChange = onAmoledDarkChange, colors = SwitchDefaults.colors(checkedThumbColor = c.onPrimary, checkedTrackColor = c.primary)) }, colors = ListItemDefaults.colors(containerColor = Color.Transparent))
+        ListItem(headlineContent = { Text("AMOLED black", fontWeight = FontWeight.Bold, color = c.ink) }, supportingContent = { Text(stringResource(R.string.amoled_desc), color = c.muted) }, leadingContent = { Icon(Icons.Default.DarkMode, null, tint = c.primary) }, trailingContent = { Switch(checked = amoledDark, onCheckedChange = onAmoledDarkChange, colors = SwitchDefaults.colors(checkedThumbColor = c.onPrimary, checkedTrackColor = c.primary)) }, colors = ListItemDefaults.colors(containerColor = Color.Transparent))
         ListItem(headlineContent = { Text("Adult content", fontWeight = FontWeight.Bold, color = c.ink) }, supportingContent = { Text(if (nsfwEnabled) "Hentai-rated titles are shown" else "Hentai-rated titles are hidden", color = c.muted) }, leadingContent = { Icon(Icons.Default.VisibilityOff, null, tint = c.primary) }, trailingContent = { Switch(checked = nsfwEnabled, onCheckedChange = onNsfwChange, colors = SwitchDefaults.colors(checkedThumbColor = c.onPrimary, checkedTrackColor = c.primary)) }, colors = ListItemDefaults.colors(containerColor = Color.Transparent))
         // Tap opens about page
         ListItem(

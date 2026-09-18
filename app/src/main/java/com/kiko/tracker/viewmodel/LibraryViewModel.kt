@@ -65,6 +65,7 @@ import com.kiko.tracker.data.api.StacksApi
 import com.kiko.tracker.data.api.StacksRestackApi
 import com.kiko.tracker.data.api.StacksSavedTab
 import com.kiko.tracker.data.api.TenraiApi
+import com.kiko.tracker.data.model.AppLanguage
 import com.kiko.tracker.data.model.CharacterDetail
 import com.kiko.tracker.data.model.CharacterEntry
 import com.kiko.tracker.data.model.CharacterSummary
@@ -170,6 +171,7 @@ class LibraryViewModel : ViewModel() {
     var paletteStyle by mutableStateOf(PaletteStyle.TonalSpot); private set
     var customColorHex by mutableStateOf("2E51A2"); private set
     var titleLanguage by mutableStateOf(TitleLanguage.Romaji)
+    var appLanguage by mutableStateOf(AppLanguage.English)
     var listFilter by mutableStateOf("All")
     // Hoisted scroll state
     var listTypeTab by mutableStateOf(MediaType.Anime); private set
@@ -1406,6 +1408,7 @@ class LibraryViewModel : ViewModel() {
     }
     fun loadTitleLanguage(context: Context) { titleLanguage = runCatching { TitleLanguage.valueOf(settingsPrefs(context).getString("title_language", TitleLanguage.Romaji.name)!!) }.getOrDefault(TitleLanguage.Romaji) }
     fun setTitleLanguage(context: Context, lang: TitleLanguage) { titleLanguage = lang; settingsPrefs(context).edit().putString("title_language", lang.name).apply() }
+    fun setAppLanguage(context: Context, lang: AppLanguage) { appLanguage = lang; settingsPrefs(context).edit().putString("app_language", lang.name).apply() }
     fun loadListFilter(context: Context) { listFilter = settingsPrefs(context).getString("list_filter", "All") ?: "All" }
     fun setListFilter(context: Context, filter: String) { listFilter = filter; listScrollIndex = 0; listScrollOffset = 0; settingsPrefs(context).edit().putString("list_filter", filter).apply() }
     fun loadNsfwPref(context: Context) { nsfwEnabled = settingsPrefs(context).getBoolean("nsfw_enabled", false) }

@@ -95,6 +95,7 @@ import com.kiko.tracker.ui.theme.kikoCircleShape
 import com.kiko.tracker.ui.theme.kikoClickable
 import com.kiko.tracker.ui.theme.kikoCorner
 import com.kiko.tracker.ui.theme.kikoPillShape
+import com.kiko.tracker.util.LocaleManager
 
 // The compact navigation bar and expanded navigation rail deliberately share
 // one item treatment.  This is the Material adaptive pattern: destinations
@@ -943,6 +944,42 @@ fun FavoriteHeartButton(
                 tint = if (favorited) c.danger else (outlineTint ?: c.ink),
                 modifier = Modifier.size(18.dp),
             )
+        }
+    }
+}
+
+@Composable
+fun LanguagePickerDropdown() {
+    var expanded by remember { mutableStateOf(false) }
+    var selectedTag by remember { mutableStateOf(LocaleManager.getCurrentLocaleTag()) }
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it }
+    ) {
+        OutlinedTextField(
+            readOnly = true,
+            value = LocaleManager.supportedLocales.firstOrNull { it.first == selectedTag }?.second ?: "English",
+            onValueChange = {},
+            label = { Text("Language") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier.menuAnchor()
+        )
+
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            LocaleManager.supportedLocales.forEach { (tag, label) ->
+                DropdownMenuItem(
+                    text = { Text(label) },
+                    onClick = {
+                        selectedTag = tag
+                        expanded = false
+                        LocaleManager.setLocale(tag)
+                    }
+                )
+            }
         }
     }
 }

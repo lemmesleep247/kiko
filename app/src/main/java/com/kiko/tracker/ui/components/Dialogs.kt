@@ -27,6 +27,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.kiko.tracker.data.model.AppLanguage
 import com.kiko.tracker.data.model.ColorSource
 import com.kiko.tracker.data.model.PaletteStyle
 import com.kiko.tracker.data.model.ThemeMode
@@ -247,7 +248,8 @@ import com.kiko.tracker.util.AppUpdateInfo
     }
 }
 
-@Composable fun TitleLanguageSheet(current: TitleLanguage, onDismiss: () -> Unit, onSelect: (TitleLanguage) -> Unit) {
+@Composable
+fun TitleLanguageSheet(current: TitleLanguage, onDismiss: () -> Unit, onSelect: (TitleLanguage) -> Unit) {
     val c = LocalKikoColors.current
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = c.surfaceContainerLow) {
         Column(Modifier.padding(horizontal = 22.dp).padding(bottom = 28.dp)) {
@@ -258,6 +260,34 @@ import com.kiko.tracker.util.AppUpdateInfo
                     Column {
                         Text(lang.label, fontWeight = FontWeight.Bold, color = c.ink)
                         Text(when (lang) { TitleLanguage.Romaji -> "e.g. Sousou no Frieren"; TitleLanguage.English -> "e.g. Frieren: Beyond Journey's End" }, color = c.muted, fontSize = 12.sp)
+                    }
+                    if (lang == current) Icon(Icons.Default.Check, null, tint = c.primary)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AppLanguageSheet(current: AppLanguage, onDismiss: () -> Unit, onSelect: (AppLanguage) -> Unit) {
+    val c = LocalKikoColors.current
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = c.surfaceContainerLow) {
+        Column(Modifier.padding(horizontal = 22.dp).padding(bottom = 28.dp)) {
+            Text("Preferences", color = c.primary, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            Text("App language", style = MaterialTheme.typography.headlineSmall, color = c.ink, modifier = Modifier.padding(top = 5.dp, bottom = 16.dp))
+            AppLanguage.entries.forEach { lang ->
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                        .clip(RoundedCornerShape(kikoCorner(16.dp)))
+                        .background(if (lang == current) c.primaryContainer else Color.Transparent)
+                        .kikoClickable { onSelect(lang) }
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column {
+                        Text(lang.label, fontWeight = FontWeight.Bold, color = c.ink)
+                        Text(lang.nativeLabel, color = c.muted, fontSize = 12.sp)
                     }
                     if (lang == current) Icon(Icons.Default.Check, null, tint = c.primary)
                 }

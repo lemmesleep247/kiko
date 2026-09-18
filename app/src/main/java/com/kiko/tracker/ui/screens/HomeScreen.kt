@@ -67,6 +67,9 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.size.Size
 import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.res.stringResource
+import com.kiko.tracker.R
 import kotlinx.coroutines.launch
 import com.kiko.tracker.data.api.MalHistoryEntry
 import com.kiko.tracker.data.api.NewsSnapshot
@@ -106,10 +109,32 @@ import com.kiko.tracker.ui.theme.kikoPillShape
 import com.kiko.tracker.ui.theme.pressScale
 import com.kiko.tracker.ui.theme.rememberStaggerMemory
 import com.kiko.tracker.viewmodel.LibraryViewModel
+import java.time.DayOfWeek
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
-@Composable fun HomeScreen(vm: LibraryViewModel, onOpenDetail: (MediaItem) -> Unit, onSeeHistory: () -> Unit, onDiscover: () -> Unit, onRanking: () -> Unit, onSeasonal: () -> Unit, onSchedule: (java.time.DayOfWeek) -> Unit, onOpenTopic: (Int, String) -> Unit, onSeeNews: () -> Unit, onOpenStack: (Int, String) -> Unit, onOpenStacks: () -> Unit, onSignIn: () -> Unit, onSeeFeaturedArticles: () -> Unit = {}, onOpenFeaturedArticle: (String, String) -> Unit = { _, _ -> }, onOpenGenre: (String, Boolean) -> Unit = { _, _ -> }) {
+@Composable fun HomeScreen(
+    vm: LibraryViewModel,
+    onOpenDetail: (MediaItem) -> Unit,
+    onSeeHistory: () -> Unit,
+    onDiscover: () -> Unit,
+    onRanking: () -> Unit,
+    onSeasonal: () -> Unit,
+    onSchedule: (DayOfWeek) -> Unit,
+    onOpenTopic: (Int, String) -> Unit,
+    onSeeNews: () -> Unit,
+    onOpenStack: (Int, String) -> Unit,
+    onOpenStacks: () -> Unit,
+    onSignIn: () -> Unit,
+    onSeeFeaturedArticles: () -> Unit = {},
+    onOpenFeaturedArticle: (String, String) -> Unit = { _, _ -> },
+    onOpenGenre: (String, Boolean) -> Unit = { _, _ -> }
+) {
     val c = LocalKikoColors.current
     val context = LocalContext.current
+    val configuration = LocalConfiguration.current
+
     LaunchedEffect(vm.signedIn) { vm.loadNewsSnapshots(context) }
     LaunchedEffect(Unit) { vm.loadHomeFeaturedArticles() }
     // Was recomputing (filter +
@@ -163,6 +188,9 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
     val trackedOpenTopic: (Int, String) -> Unit = onOpenTopic
     val scope = rememberCoroutineScope()
     val showGoToTop by remember { derivedStateOf { listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 600 } }
+
+    val locale: Locale = configuration.locales[0]
+
     PullToRefreshBox(
         isRefreshing = vm.loading,
         onRefresh = { vm.load(context); vm.loadNewsSnapshots(context, force = true); vm.loadHomeFeaturedArticles(force = true) },
@@ -170,11 +198,16 @@ import com.kiko.tracker.viewmodel.LibraryViewModel
     ) {
         LazyColumn(state = listState, contentPadding = PaddingValues(bottom = if (showGoToTop) 90.dp else 24.dp)) {
             item {
-                AppHeader("kiko", 14.dp) { Avatar(vm.malProfile?.picture.orEmpty(), vm.malProfile?.name.orEmpty(), showUpdateBadge = vm.updateInfo != null) { rect -> vm.profileDrawerOpen = true; vm.profileMenuAnchor = rect } }
+                AppHeader(stringResource(R.string.app_name), 14.dp) {
+                    Avatar(vm.malProfile?.picture.orEmpty(), vm.malProfile?.name.orEmpty(), showUpdateBadge = vm.updateInfo != null) {
+                        rect -> vm.profileDrawerOpen = true; vm.profileMenuAnchor = rect
+                    }
+                }
+
                 Column(Modifier.padding(horizontal = 14.dp)) {
                     // Use device current date
                     Text(
-                        java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("EEEE, MMMM d", java.util.Locale.getDefault())).uppercase(java.util.Locale.getDefault()),
+                        LocalDate.now().format(DateTimeFormatter.ofPattern("EEEE, MMMM d", locale)).uppercase(locale),
                         color = c.primary, fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.5.sp,
                     )
                     // Each of these home

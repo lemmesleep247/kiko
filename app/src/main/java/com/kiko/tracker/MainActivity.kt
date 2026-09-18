@@ -10,16 +10,11 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
+import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.runtime.*
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.lifecycle.viewmodel.compose.viewModel
-import coil.compose.AsyncImage
 import kotlinx.coroutines.launch
 import com.kiko.tracker.data.api.MalApi
 import com.kiko.tracker.data.api.NetworkClient
@@ -34,7 +29,7 @@ import com.kiko.tracker.util.saveCrashLogToDownloads
 import com.kiko.tracker.util.shareCrashLogToDiscord
 import com.kiko.tracker.viewmodel.LibraryViewModel
 
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
     private var callback by mutableStateOf<Uri?>(null)
     // Opened via MAL link
     private var malLink by mutableStateOf<Uri?>(null)
